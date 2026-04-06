@@ -9,12 +9,12 @@ RUN apt-get update \
 
 COPY package.json package-lock.json ./
 COPY scripts/fix-tsc-bin.js ./scripts/fix-tsc-bin.js
-
-RUN npm ci
-
+# prisma/ + config before npm ci so postinstall (prisma generate) can run
 COPY prisma ./prisma
 COPY prisma.config.ts ./
-RUN npx prisma generate
+
+RUN npm ci \
+  && node -e "require('lightningcss')"
 
 COPY scripts/docker-entrypoint-dev.sh /usr/local/bin/docker-entrypoint-dev.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint-dev.sh

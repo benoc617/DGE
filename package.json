@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "postinstall": "node scripts/fix-tsc-bin.js",
+    "postinstall": "node scripts/fix-tsc-bin.js && prisma generate",
     "typecheck": "node ./node_modules/typescript/lib/tsc.js --noEmit",
     "dev": "next dev",
     "build": "next build",
@@ -22,6 +22,7 @@
     "test:all": "npm run test:unit && npm run test:e2e",
     "test:coverage": "vitest run --coverage",
     "docker:up": "docker compose up --build",
+    "docker:dev:redeploy": "bash scripts/docker-dev-redeploy.sh",
     "docker:down": "docker compose down",
     "docker:logs": "docker compose logs -f app",
     "seed:system-settings": "npx tsx scripts/seed-system-settings.ts"
@@ -30,15 +31,16 @@
     "@google/generative-ai": "^0.24.1",
     "@prisma/adapter-pg": "^7.6.0",
     "@prisma/client": "^7.6.0",
+    "@tailwindcss/postcss": "^4",
     "bcryptjs": "^3.0.3",
     "next": "16.2.2",
     "pg": "^8.20.0",
     "prisma": "^7.6.0",
     "react": "19.2.4",
-    "react-dom": "19.2.4"
+    "react-dom": "19.2.4",
+    "tailwindcss": "^4"
   },
   "devDependencies": {
-    "@tailwindcss/postcss": "^4",
     "@types/bcryptjs": "^2.4.6",
     "@types/node": "^20",
     "@types/react": "^19",
@@ -48,7 +50,6 @@
     "eslint": "^9",
     "eslint-config-next": "16.2.2",
     "start-server-and-test": "^2.1.5",
-    "tailwindcss": "^4",
     "tsx": "^4.21.0",
     "typescript": "^5",
     "vitest": "^4.1.2"

@@ -4,17 +4,16 @@ cd /app
 
 export PORT="${PORT:-3000}"
 
-# node_modules is a named volume over /app/node_modules. If it was filled on the host (wrong OS)
-# or is empty, optional native deps (Tailwind → lightningcss) won't match Linux in the container.
-arch="$(uname -m)"
-case "$arch" in
-  aarch64|arm64) _LCSS_PKG="lightningcss-linux-arm64-gnu" ;;
-  x86_64|amd64) _LCSS_PKG="lightningcss-linux-x64-gnu" ;;
-  *) _LCSS_PKG="" ;;
-esac
-if [ -n "${_LCSS_PKG}" ] && [ ! -d "node_modules/${_LCSS_PKG}" ]; then
-  echo "[srx] node_modules missing ${_LCSS_PKG} for this image — running npm ci…"
+# node_modules is a named volume over /app/node_modules. If it was filled on the host (wrong OS),
+# is empty, or optional native deps failed partially, Tailwind → lightningcss breaks at runtime.
+# Directory checks are not enough (empty dirs, wrong arch); verify the native binding loads.
+if ! node -e "require('lightningcss')" 2>/dev/null; then
+  echo "[srx] lightningcss native binding missing or broken — running npm ci…"
   npm ci
+fi
+if ! node -e "require('lightningcss')" 2>/dev/null; then
+  echo "[srx] FATAL: lightningcss still fails after npm ci. Remove the node_modules volume or fix optional deps." >&2
+  exit 1
 fi
 
 echo "[srx] prisma generate + migrate deploy…"
