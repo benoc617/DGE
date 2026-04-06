@@ -1,7 +1,8 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { CIVIL_STATUS_NAMES, PLANET_CONFIG } from "@/lib/game-constants";
 import { getCurrentTurn } from "@/lib/turn-order";
+import { tryRollRound, runDoorGameAITurns } from "@/lib/door-game-turns";
 import bcrypt from "bcryptjs";
 
 const playerInclude = {
@@ -46,29 +47,120 @@ async function buildResponse(player: FullPlayer) {
   let turnTimeoutSecs = 86400;
   let waitingForGameStart = false;
 
+  let turnMode: "sequential" | "simultaneous" = "sequential";
+  let dayNumber = 1;
+  let actionsPerDay = 5;
+  let fullTurnsLeftToday = 0;
+  let turnOpen = false;
+  let canAct = false;
+  let roundEndsAt: string | null = null;
+
   if (player.gameSessionId) {
     const sess = await prisma.gameSession.findUnique({
       where: { id: player.gameSessionId },
-      select: { turnTimeoutSecs: true, waitingForHuman: true },
+      select: {
+        turnTimeoutSecs: true,
+        waitingForHuman: true,
+        turnMode: true,
+        dayNumber: true,
+        actionsPerDay: true,
+        roundStartedAt: true,
+        turnStartedAt: true,
+      },
     });
     if (sess) {
       turnTimeoutSecs = sess.turnTimeoutSecs;
       waitingForGameStart = sess.waitingForHuman === true;
+      turnMode = sess.turnMode === "simultaneous" ? "simultaneous" : "sequential";
+      dayNumber = sess.dayNumber;
+      actionsPerDay = sess.actionsPerDay;
+
+      if (sess.turnMode === "simultaneous" && !sess.waitingForHuman) {
+        const sid = player.gameSessionId!;
+        try {
+          await tryRollRound(sid);
+        } catch (err) {
+          console.error("[status] tryRollRound:", err);
+        }
+
+        // tryRollRound may reset fullTurnsUsed / turnOpen — reload so response and AI kick logic match DB.
+        const freshEmpire = await prisma.empire.findUnique({
+          where: { playerId: player.id },
+        });
+        if (freshEmpire) {
+          Object.assign(e, freshEmpire);
+        }
+
+        const pendingAi = await prisma.player.count({
+          where: {
+            gameSessionId: sid,
+            isAI: true,
+            empire: {
+              turnsLeft: { gt: 0 },
+              fullTurnsUsedThisRound: { lt: sess.actionsPerDay },
+            },
+          },
+        });
+
+        if (pendingAi > 0) {
+          after(() => {
+            void runDoorGameAITurns(sid).catch((err) => {
+              console.error("[door-game] runDoorGameAITurns from status kick", sid, err);
+            });
+          });
+        }
+      }
     }
 
-    const turn = await getCurrentTurn(player.gameSessionId);
-    if (turn) {
-      isYourTurn = turn.currentPlayerId === player.id;
-      currentTurnPlayer = turn.currentPlayerName;
-      turnDeadline = turn.turnDeadline;
-      turnOrder = turn.order.map((p) => ({ name: p.name, isAI: p.isAI }));
-    } else {
+    const sess2 = await prisma.gameSession.findUnique({
+      where: { id: player.gameSessionId },
+      select: {
+        turnMode: true,
+        dayNumber: true,
+        actionsPerDay: true,
+        roundStartedAt: true,
+        turnStartedAt: true,
+      },
+    });
+
+    if (sess2?.turnMode === "simultaneous") {
+      dayNumber = sess2.dayNumber;
+      actionsPerDay = sess2.actionsPerDay;
+      const used = e.fullTurnsUsedThisRound ?? 0;
+      fullTurnsLeftToday = Math.max(0, actionsPerDay - used);
+      turnOpen = e.turnOpen ?? false;
+      canAct = fullTurnsLeftToday > 0 && e.turnsLeft > 0;
+      if (sess2.roundStartedAt) {
+        roundEndsAt = new Date(sess2.roundStartedAt.getTime() + turnTimeoutSecs * 1000).toISOString();
+        turnDeadline = roundEndsAt;
+      } else {
+        roundEndsAt = null;
+        turnDeadline = null;
+      }
+      isYourTurn = canAct;
+      currentTurnPlayer = null;
+
       const roster = await prisma.player.findMany({
         where: { gameSessionId: player.gameSessionId, empire: { turnsLeft: { gt: 0 } } },
         orderBy: { turnOrder: "asc" },
         select: { name: true, isAI: true },
       });
       turnOrder = roster.map((p) => ({ name: p.name, isAI: p.isAI }));
+    } else {
+      const turn = await getCurrentTurn(player.gameSessionId);
+      if (turn) {
+        isYourTurn = turn.currentPlayerId === player.id;
+        currentTurnPlayer = turn.currentPlayerName;
+        turnDeadline = turn.turnDeadline;
+        turnOrder = turn.order.map((p) => ({ name: p.name, isAI: p.isAI }));
+      } else {
+        const roster = await prisma.player.findMany({
+          where: { gameSessionId: player.gameSessionId, empire: { turnsLeft: { gt: 0 } } },
+          orderBy: { turnOrder: "asc" },
+          select: { name: true, isAI: true },
+        });
+        turnOrder = roster.map((p) => ({ name: p.name, isAI: p.isAI }));
+      }
     }
   }
 
@@ -81,6 +173,13 @@ async function buildResponse(player: FullPlayer) {
     turnOrder,
     turnTimeoutSecs,
     waitingForGameStart,
+    turnMode,
+    dayNumber,
+    actionsPerDay,
+    fullTurnsLeftToday,
+    turnOpen,
+    canAct,
+    roundEndsAt,
     empire: {
       credits: e.credits,
       food: e.food,
@@ -98,6 +197,8 @@ async function buildResponse(player: FullPlayer) {
       turnsLeft: e.turnsLeft,
       isProtected: e.isProtected,
       protectionTurns: e.protectionTurns,
+      turnOpen: e.turnOpen,
+      fullTurnsUsedThisRound: e.fullTurnsUsedThisRound,
     },
     planets: e.planets.map((p) => ({
       id: p.id,

@@ -88,6 +88,9 @@ export default function Leaderboard({ currentPlayer, refreshKey, onSelectTarget,
             <Tooltip tip={TT.plt}>
               <span className="w-6 text-right cursor-help inline-flex justify-end">Plt</span>
             </Tooltip>
+            <Tooltip tip={TT.turns}>
+              <span className="w-7 text-right cursor-help inline-flex justify-end">Turns</span>
+            </Tooltip>
             <Tooltip tip={TT.mil}>
               <span className="w-6 text-right cursor-help inline-flex justify-end">Mil</span>
             </Tooltip>
@@ -134,6 +137,12 @@ export default function Leaderboard({ currentPlayer, refreshKey, onSelectTarget,
                 </span>
                 <span className="text-green-700 w-6 text-right" title={`${r.planets} planets`}>
                   {r.planets}p
+                </span>
+                <span
+                  className="text-green-600 w-7 text-right tabular-nums"
+                  title={`Economy ticks completed: ${r.turnsPlayed}`}
+                >
+                  {r.turnsPlayed}
                 </span>
                 <span className="text-red-800 w-6 text-right" title={`Military strength: ${r.military}`}>
                   {abbreviate(r.military)}

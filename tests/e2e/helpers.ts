@@ -3,7 +3,13 @@
  * Use `npm run test:e2e` (starts Next automatically) or run `npm run dev` and `vitest run tests/e2e`.
  */
 
+import { ACTIONS_PER_DAY } from "../../src/lib/game-constants";
+
 export const BASE = process.env.TEST_BASE_URL || "http://localhost:3000";
+
+export async function sleep(ms: number) {
+  await new Promise((r) => setTimeout(r, ms));
+}
 
 /** For E2E that must hit a rival (guerrilla, etc.): clear new-empire protection on named players. */
 export async function clearNewEmpireProtectionForPlayers(names: string[]) {
@@ -31,7 +37,11 @@ export async function api(path: string, options?: RequestInit) {
   return { status: res.status, data };
 }
 
-export async function register(name: string, password: string, opts?: { galaxyName?: string; isPublic?: boolean }) {
+export async function register(
+  name: string,
+  password: string,
+  opts?: { galaxyName?: string; isPublic?: boolean; turnMode?: "sequential" | "simultaneous" },
+) {
   return api("/api/game/register", {
     method: "POST",
     body: JSON.stringify({ name, password, ...opts }),
@@ -69,6 +79,44 @@ export async function doTick(playerName: string) {
     method: "POST",
     body: JSON.stringify({ playerName }),
   });
+}
+
+/**
+ * Poll GET /api/game/status until predicate holds. Status polls also trigger door-game AI catch-up.
+ */
+export async function pollStatusUntil(
+  playerId: string,
+  predicate: (data: Record<string, unknown>) => boolean,
+  opts?: { timeoutMs?: number; intervalMs?: number },
+): Promise<Record<string, unknown>> {
+  const timeoutMs = opts?.timeoutMs ?? 120_000;
+  const intervalMs = opts?.intervalMs ?? 400;
+  const start = Date.now();
+  let last: Record<string, unknown> = {};
+  while (Date.now() - start < timeoutMs) {
+    const s = await getStatus(playerId);
+    last = (s.data ?? {}) as Record<string, unknown>;
+    if (s.status === 200 && predicate(last)) return last;
+    await sleep(intervalMs);
+  }
+  throw new Error(`pollStatusUntil timeout after ${timeoutMs}ms; last=${JSON.stringify(last).slice(0, 800)}`);
+}
+
+/** One commander uses all daily full-turn slots (tick + end_turn each). */
+export async function completeDoorDaySlots(playerName: string, slots = ACTIONS_PER_DAY) {
+  for (let i = 0; i < slots; i++) {
+    const t = await doTick(playerName);
+    if (t.status !== 200) {
+      throw new Error(`doTick failed: ${t.status} ${JSON.stringify(t.data)}`);
+    }
+    const e = await doAction(playerName, "end_turn");
+    if (e.status !== 200) {
+      throw new Error(`end_turn failed: ${e.status} ${JSON.stringify(e.data)}`);
+    }
+    if (!(e.data as { success?: boolean }).success) {
+      throw new Error(`end_turn not success: ${JSON.stringify(e.data)}`);
+    }
+  }
 }
 
 export async function setupAI(names: string[], gameSessionId: string) {
@@ -189,6 +237,68 @@ export async function adminDeleteGalaxies(cookie: string, ids: string[]) {
     status: r.status,
     data: r.headers.get("content-type")?.includes("json") ? await r.json() : null,
   }));
+}
+
+/** Remove E2E game sessions via admin API (default admin / srxpass). No-op if login fails. */
+export async function deleteTestGalaxySessions(sessionIds: string[]): Promise<void> {
+  const ids = [...new Set(sessionIds.filter(Boolean))];
+  if (ids.length === 0) return;
+  const { status, cookie } = await adminLogin();
+  if (status !== 200 || !cookie) return;
+  try {
+    await adminDeleteGalaxies(cookie, ids);
+  } finally {
+    await adminLogout(cookie);
+  }
+}
+
+export async function deleteTestGalaxySession(sessionId: string | undefined | null): Promise<void> {
+  if (!sessionId) return;
+  await deleteTestGalaxySessions([sessionId]);
+}
+
+let pendingGalaxyDeletes: string[] = [];
+
+/** Queue a session for deletion after the current test (see `tests/e2e/setup.ts` + `flushScheduledTestGalaxyDeletions`). */
+export function scheduleTestGalaxyDeletion(sessionId: string | undefined | null) {
+  if (sessionId) pendingGalaxyDeletes.push(sessionId);
+}
+
+export async function flushScheduledTestGalaxyDeletions(): Promise<void> {
+  const ids = [...new Set(pendingGalaxyDeletes)];
+  pendingGalaxyDeletes = [];
+  await deleteTestGalaxySessions(ids);
+}
+
+/**
+ * Remove `UserAccount` rows created during E2E (signup). Unlinks `Player.userId` first so FK is satisfied.
+ * Uses Prisma (same process as the app under test — run E2E against a server that shares this DB).
+ */
+export async function deleteTestUserAccountsByUsernames(usernames: string[]): Promise<void> {
+  const normalized = [...new Set(usernames.map((u) => u.trim().toLowerCase()).filter(Boolean))];
+  if (normalized.length === 0) return;
+  const { prisma } = await import("@/lib/prisma");
+  const accounts = await prisma.userAccount.findMany({
+    where: { username: { in: normalized } },
+    select: { id: true },
+  });
+  for (const { id } of accounts) {
+    await prisma.player.updateMany({ where: { userId: id }, data: { userId: null } });
+    await prisma.userAccount.delete({ where: { id } }).catch(() => {});
+  }
+}
+
+let pendingUserDeletes: string[] = [];
+
+/** Queue a username for `UserAccount` deletion after the current test (runs after galaxy flush). */
+export function scheduleTestUserDeletion(username: string | undefined | null) {
+  if (username) pendingUserDeletes.push(username.trim().toLowerCase());
+}
+
+export async function flushScheduledTestUserDeletions(): Promise<void> {
+  const names = [...new Set(pendingUserDeletes)];
+  pendingUserDeletes = [];
+  await deleteTestUserAccountsByUsernames(names);
 }
 
 export async function adminLogout(cookie: string) {

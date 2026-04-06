@@ -125,14 +125,10 @@ export default function EmpirePanel({ state }: { state: GameState }) {
             <MiniStat label="Gen" value={army.generals} tip={EMPIRE_UNITS.Gen} />
             <MiniStat label="Ftr" value={army.fighters} tip={EMPIRE_UNITS.Ftr} />
             <MiniStat label="Stn" value={army.defenseStations} tip={EMPIRE_UNITS.Stn} />
-            {(army.lightCruisers > 0 || army.heavyCruisers > 0 || army.carriers > 0 || army.covertAgents > 0) && (
-              <>
-                <MiniStat label="LC" value={army.lightCruisers} tip={EMPIRE_UNITS.LC} />
-                <MiniStat label="HC" value={army.heavyCruisers} tip={EMPIRE_UNITS.HC} />
-                <MiniStat label="Car" value={army.carriers} tip={EMPIRE_UNITS.Car} />
-                <MiniStat label="Cov" value={army.covertAgents} tip={EMPIRE_UNITS.Cov} />
-              </>
-            )}
+            <MiniStat label="LC" value={army.lightCruisers} tip={EMPIRE_UNITS.LC} />
+            <MiniStat label="HC" value={army.heavyCruisers} tip={EMPIRE_UNITS.HC} />
+            <MiniStat label="Car" value={army.carriers} tip={EMPIRE_UNITS.Car} />
+            <MiniStat label="Cov" value={army.covertAgents} tip={EMPIRE_UNITS.Cov} />
           </div>
           {army.commandShipStrength > 0 && (
             <Tooltip tip={EMPIRE_TT.commandShip}>

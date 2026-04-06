@@ -1,5 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { api, register, uniqueName, uniqueGalaxy } from "./helpers";
+import {
+  api,
+  register,
+  uniqueName,
+  uniqueGalaxy,
+  scheduleTestGalaxyDeletion,
+  scheduleTestUserDeletion,
+} from "./helpers";
 
 describe("auth account API", () => {
   it("signup then login returns user and empty games", async () => {
@@ -15,6 +22,7 @@ describe("auth account API", () => {
       }),
     });
     expect(signup.status).toBe(201);
+    scheduleTestUserDeletion(u);
 
     const authLogin = await api("/api/auth/login", {
       method: "POST",
@@ -40,9 +48,11 @@ describe("auth account API", () => {
       }),
     });
     expect(signup.status).toBe(201);
+    scheduleTestUserDeletion(u);
 
     const { status, data } = await register(u, "password123", { galaxyName: uniqueGalaxy("AuthLnk") });
     expect(status).toBe(201);
+    scheduleTestGalaxyDeletion((data as { gameSessionId?: string }).gameSessionId);
     expect((data as { name?: string }).name).toBe(u.toLowerCase());
 
     const authLogin = await api("/api/auth/login", {

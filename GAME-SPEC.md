@@ -37,6 +37,8 @@ This lets the UI show a **situation report** (income, deficits, critical events)
 
 The turn tick always runs before the player's action is executed in the same transaction of work — either in `runAndPersistTick` or at the start of `processAction`.
 
+**Endgame settlement:** When `turnsLeft` reaches **0**, **`runEndgameSettlementTick`** runs **one** full **`processTurnTick`** from the **post–final-action** empire state (`ProcessTurnTickOptions.endgameSettlement: true` — does **not** increment `turnsPlayed`), then the same **research / loan / bond** finance pass used at the end of every `processAction`. Results are persisted and a **`TurnLog`** row is written with `action: endgame_settlement`. This applies the economy that would have started the **next** turn (production, maintenance, random events, etc.) so the last action is fully reflected without a second playable turn. **Sequential:** invoked at the end of **`processAction`** when the persisted empire has `turnsLeft === 0`. **Simultaneous:** **`processAction`** uses **`skipEndgameSettlement: true`**; **`closeFullTurn`** calls **`runEndgameSettlementTick`** after decrementing `turnsLeft` to 0 (before **`tryRollRound`**). Idempotent: skipped if an **`endgame_settlement`** log already exists for that player.
+
 ### Turn Order Enforcement
 
 Turns are taken in strict sequential order within a session:
@@ -51,6 +53,25 @@ Turns are taken in strict sequential order within a session:
 - The status API (`GET /api/game/status`) returns `isYourTurn` (boolean), `currentTurnPlayer` (name), `turnDeadline` (ISO string or **null** in lobby), `waitingForGameStart` when the session is still in admin lobby, and `turnOrder` (ordered list of all active players with name and isAI).
 - If the current turn belongs to another human, the UI disables controls, shows "WAITING — [NAME]'S TURN", and polls about every 2 seconds.
 - **Turn timer**: `GameSession.turnStartedAt` records when the current turn began (reset on every advance). `turnTimeoutSecs` is configurable at galaxy creation and in CFG (creator); default 86400 (24 hours). If `getCurrentTurn()` detects the current human player has exceeded their deadline, it runs `runAndPersistTick` if needed, then auto-executes `end_turn` and advances. The UI displays a live countdown in the header — yellow when it's your turn, red under 1 hour, gray when waiting for another player.
+
+### Door-game / simultaneous mode (`GameSession.turnMode = simultaneous`)
+
+**SRE-style “door game” play:** a **calendar round** (shown as **day** `dayNumber`) lasts until **every** active empire has used all of its **full turns** for that round (`actionsPerDay`, default **5**), **or** the **round timer** fires first. **Everyone can play at once** — humans are **not** blocked while AIs still owe daily full turns. **`GET /api/game/status`** schedules **`runDoorGameAITurns`** in the background whenever any AI still has daily slots left so AIs catch up while humans play.
+
+**Round deadline:** when `now >= roundStartedAt + turnTimeoutSecs` (same **`turnTimeoutSecs`** as sequential games, default **86400**), **`tryRollRound`** treats remaining daily slots as **skipped** for any empire still short (`fullTurnsUsedThisRound` → `actionsPerDay`, `turnOpen` cleared). Each skipped slot also consumes **one** `turnsLeft` (same as a completed full turn). Emits **`GameEvent`** `round_timeout`, then the day can roll once all empires are marked done for the round.
+
+- **One full turn** = one economy **`runAndPersistTick`** (with `decrementTurnsLeft: false`) + **one** mutating **`processAction`**; the **`POST /api/game/action`** handler closes the full turn automatically (`doorGameAutoCloseFullTurnAfterAction` + `closeFullTurn`) so players do not need a separate **`end_turn`** unless they skip without acting (**Skip Turn**). Mid-turn actions use `keepTickProcessed: true` so `tickProcessed` stays true until auto-close.
+- **`Empire.turnOpen`:** true after the tick for that full turn has been applied, until `end_turn` + `closeFullTurn` runs.
+- **`Empire.fullTurnsUsedThisRound`:** incremented when a full turn ends — explicit **`end_turn`** / Skip, or **automatic** close after any other successful action in simultaneous mode (`doorGameAutoCloseFullTurnAfterAction`). Up to **`actionsPerDay`** (default **5**) full turns per round per empire.
+- **`POST /api/game/tick`** opens a full turn (`openFullTurn`) when allowed. **`POST /api/game/action`** is used for all actions (including simultaneous); mutating requests take a per-session **`pg_try_advisory_xact_lock`** inside a short transaction; **409** + `galaxyBusy` if the galaxy is busy.
+- **`turnsPlayed`:** increments once per economy tick (once per **full turn** opened), not once per mid-turn action.
+- **`turnsLeft`:** each empire’s `turnsLeft` decrements by **1** each time a full turn ends — in **`closeFullTurn`** (after **`end_turn`**, Skip, or auto-close following another action). Calendar day rollover **does not** batch-decrement everyone’s `turnsLeft`; length is driven by miniturn count, not by day count.
+- **Round rollover (`tryRollRound`):** after optional timeout forfeit (charging `turnsLeft` for skipped slots as above), when every active empire has `fullTurnsUsedThisRound >= actionsPerDay`, resets `fullTurnsUsedThisRound`, `tickProcessed`, `turnOpen` for all empires in the session; increments `dayNumber`; sets **`roundStartedAt`** to now; emits **`GameEvent`** `day_complete`. **Immediately after** `day_complete`, **`tryRollRound`** kicks **`runDoorGameAITurns`** in the background (**does not** `await` inside the same call path as `withCommitLock`’s interactive transaction — awaiting AI drain there would exceed Prisma’s transaction timeout and return **500**). **`runDoorGameAITurns`** then runs **`drainDoorGameAiTurns`** so every AI exhausts its daily full-turn quota for the **new** day in one back-to-back batch once the galaxy commit has finished.
+- **Status API** exposes `fullTurnsLeftToday`, `turnOpen`, `canAct`, `dayNumber`, `actionsPerDay`, `roundEndsAt` / `turnDeadline` (ISO countdown to **`roundStartedAt + turnTimeoutSecs`**). `currentTurnPlayerId` is **not** used for gating.
+- **AI:** **`drainDoorGameAiTurns`** (via **`runDoorGameAITurns`**) runs AI full turns **sequentially** in `turnOrder` until no AI still owes daily slots (guard cap). **`runDoorGameAITurns`** wraps that drain with **`doorAiInFlight`** so overlapping kicks from **`tryRollRound`** (post-`day_complete`), a human **`after()`**, and **`GET /api/game/status`** serialize per session. **`runDoorGameAITurns`** runs after a human action (background `after()`) and from **`GET /api/game/status`** when any AI still has daily full turns left (mid-round catch-up). Each AI move is capped by a **wall-clock timeout** (`getAIMoveDecision` races a timer; on timeout the AI **end_turn**s that slot). If `processAiMoveOrSkip` takes the **skip** path (invalid action → `end_turn`), **`closeFullTurn` must still run** — same as a direct `end_turn` — or `turnOpen` stays true, `fullTurnsUsedThisRound` never increments, and the round can stall (`runOneDoorGameAI` pairs skip + success with `closeFullTurn`).
+- **Repair:** `scripts/repair-door-game-session.ts` (`npm run repair:door-session`) can detect empires stuck with `turnOpen` + last `TurnLog` `end_turn` (`isStuckDoorTurnAfterSkipEndLog`) and apply `closeFullTurn` for legacy bad rows.
+
+**Lobby:** `waitingForHuman` until first human; `roundStartedAt` is set at galaxy creation (register) or when the first human activates a pre-staged session (join).
 
 ---
 
@@ -395,7 +416,7 @@ One action per turn. Each action is processed after the turn tick.
 | EDUCATION | 14,000 | 100 | Linear immigration (+400/planet) |
 | GOVERNMENT | 12,000 | 100 | Reduces maintenance, houses generals + covert agents |
 | SUPPLY | 20,000 | 100 | Auto-produces military units |
-| RESEARCH | 40,000 | 300 | Generates research points (300/turn) + light cruisers |
+| RESEARCH | 25,000 | 300 | Generates research points (300/turn) + light cruisers |
 | ANTI_POLLUTION | 18,000 | 100 | Absorbs pollution from petroleum |
 
 #### `set_tax_rate`
@@ -564,7 +585,7 @@ Market starts with 500,000 of each resource, ratio 1.0.
 
 ## 4.10 End of Game
 
-When `turnsLeft` reaches 0, the game triggers a **Game Over** sequence:
+When `turnsLeft` reaches 0, **`runEndgameSettlementTick`** first applies one final economy tick from the post–final-action state so that all purchases, attacks, and other changes from the last turn are fully resolved (production, maintenance, random events, loans, bonds, research RP — same as a normal tick but without incrementing `turnsPlayed`). A `TurnLog` row with `action: "endgame_settlement"` is persisted. See §2 for details. Then:
 
 1. Client calls `POST /api/game/gameover` with the player name
 2. Server fetches all players + empires + armies, computes final standings sorted by net worth
@@ -878,11 +899,11 @@ AI players use Google Gemini to make decisions (model configurable via `GEMINI_M
 
 | Name | Strategy |
 |------|----------|
-| Economist | Maximize wealth through trade and production. Low taxes, bonds, avoid combat. |
-| Warlord | Rush military. Frequent attacks. Government planets for generals. |
+| Economist | Maximize wealth; contest the net-worth leader with economy, covert, and attacks when advantaged (not passive). |
+| Warlord | Rush military; frequent attacks, prefer decisive strikes on the strongest threat / leader when possible. |
 | Spy Master | Government planets → covert agents → destabilize targets → attack when civil status is high. |
 | Diplomat | Treaties and coalitions. Peaceful expansion. Only attack isolated empires. |
-| Turtle | Maximum defense. Never attack first. Research military upgrades. Counter-attack only. |
+| Turtle | Maximum defense; contest a runaway leader with decisive attacks when they are vulnerable; counter-attack hard. |
 
 ### AI Setup Flow
 
@@ -894,7 +915,7 @@ The prompt includes: persona text, full empire state (credits, resources, popula
 
 AI responds with JSON: `{ action, type?, target?, amount?, rate?, techId?, reasoning }`.
 
-**Invalid AI actions (validation failure, insufficient credits, protected target, etc.):** The engine runs `processAction` for the chosen action; if it returns `success: false`, the server immediately runs `processAction(..., "end_turn")` via `processAiMoveOrSkip` in `src/lib/ai-process-move.ts` — same fairness as a human using Skip Turn after a bad attempt. The persisted `TurnLog` is for `end_turn`; `TurnLog.details` may include `skippedAfterInvalid`, `invalidAction`, and `invalidMessage`. `GameEvent` `ai_turn` text appends ` — skipped turn.` to the failure message when the skip path succeeds.
+**Invalid AI actions (validation failure, insufficient credits, protected target, etc.):** The engine runs `processAction` for the chosen action; if it returns `success: false`, the server immediately runs `processAction(..., "end_turn")` via `processAiMoveOrSkip` in `src/lib/ai-process-move.ts` — same fairness as a human using Skip Turn after a bad attempt. The persisted `TurnLog` is for `end_turn`; `TurnLog.details` may include `skippedAfterInvalid`, `invalidAction`, and `invalidMessage`. `GameEvent` `ai_turn` text appends ` — skipped turn.` to the failure message when the skip path succeeds. **Door-game / simultaneous:** the caller (`runOneDoorGameAI`) must invoke `closeFullTurn` after a successful skip — sequential `runOneAI` does not use `closeFullTurn` because it uses a different turn model.
 
 On parse failure: defaults to `end_turn`.
 
@@ -931,7 +952,7 @@ The game is a single-page app (`src/app/page.tsx`) with a 3-column layout (3-5-4
 | Region | Span | Component | Description |
 |--------|------|-----------|-------------|
 | Header | 12 | `page.tsx` | Galaxy name, **whose turn** (`▸ YOUR TURN` or `▸ [NAME]'S TURN`), **turn timer** (24h countdown, red under 1h), **credits**, turn counter (`T5 (95 left)`), protection badge, commander name. |
-| Top | 12 | `Leaderboard.tsx` | Galactic Powers ranking with column headers (Rk, Commander, **Prt** on sm+, Worth, Pop, Plt, Mil). **Prt** shows `[PN]` when the commander has new-empire protection. Click a rival to auto-select them as target. |
+| Top | 12 | `Leaderboard.tsx` | Galactic Powers ranking with column headers (Rk, Commander, **Prt** on sm+, Worth, Pop, Plt, Turns, Mil). **Turns** = `Empire.turnsPlayed` (economy ticks). **Prt** shows `[PN]` when the commander has new-empire protection. Click a rival to auto-select them as target. |
 | Left | 3 | `EmpirePanel.tsx` | Compact stat-box grid: Net Worth + Civil Status boxes, 4-col resource grid, population/tax, sell rates inline, military mini-stats (4-col), planet type badges, collapsible planet details. |
 | Center | 5 | `ActionPanel.tsx` | "Skip Turn" button at top (disabled with "WAITING — [NAME]'S TURN" when not your turn), then 7-tabbed action panel (ECON, MIL, WAR, OPS, MKT, RES, CFG). ECON tab shows planet cards with descriptions + cost + owned count. MIL tab includes light cruisers (950 cr). CFG tab: **GAME SESSION** (galaxy name, invite code with copy, visibility toggle for creator) + **TURN ORDER** (numbered list of all players, current highlighted, `[AI]` tags). Target fields use `<select>` dropdowns. |
 | Right | 4 | `EventLog.tsx` | Scrolling event log with color-coded turn reports (income green, expenses red, population cyan, events yellow). AI turn summaries appear after each action. |
@@ -972,7 +993,7 @@ Combat data is returned from `processAction()` via `actionDetails.combatResult` 
 - **Session info** (`GET /api/game/session?id=`): returns session details including invite code (for display in CFG tab).
 - **Session settings** (`PATCH /api/game/session`): creator-only. Accepts `{ sessionId, playerName, isPublic, maxPlayers, turnTimeoutSecs }`. `maxPlayers` is clamped **2–128**. Toggles visibility between public and private; optional per-session turn timer.
 - Every session gets a unique invite code on creation. Share the code to let others join even private games.
-- **`GET /api/game/leaderboard?player=`** — session-scoped when `player` is set. Each row includes `isProtected`, `protectionTurns`, `military`, `civilStatus`, etc.
+- **`GET /api/game/leaderboard?player=`** — session-scoped when `player` is set. Each row includes `turnsPlayed`, `isProtected`, `protectionTurns`, `military`, `civilStatus`, etc.
 
 ### AI & auxiliary game HTTP routes
 

@@ -25,6 +25,25 @@ interface HubGame {
   waitingForHuman: boolean;
 }
 
+/** POST /api/game/register JSON body (partial). */
+type RegisterApiPayload = {
+  error?: string;
+  message?: string;
+  gameSessionId?: string;
+  inviteCode?: string;
+  galaxyName?: string | null;
+  isPublic?: boolean;
+  id?: string;
+  name?: string;
+};
+
+function apiErrorMessage(data: RegisterApiPayload, res: Response, fallback: string): string {
+  if (typeof data.error === "string" && data.error.trim()) return data.error;
+  if (typeof data.message === "string" && data.message.trim()) return data.message;
+  if (!res.ok) return `${fallback} (HTTP ${res.status})`;
+  return fallback;
+}
+
 export interface GameState {
   player: { id: string; name: string; isAI: boolean };
   isYourTurn?: boolean;
@@ -51,6 +70,8 @@ export interface GameState {
     turnsLeft: number;
     isProtected: boolean;
     protectionTurns: number;
+    turnOpen?: boolean;
+    fullTurnsUsedThisRound?: number;
   };
   planets: {
     id: string;
@@ -97,6 +118,15 @@ export interface GameState {
     accumulatedPoints: number;
     unlockedTechIds: string[];
   } | null;
+  /** `simultaneous` = door-game (SRE-style) multi–full-turn days; omitted = legacy sequential. */
+  turnMode?: "sequential" | "simultaneous";
+  dayNumber?: number;
+  actionsPerDay?: number;
+  /** Full turns remaining this calendar round (tick→actions→end_turn each). */
+  fullTurnsLeftToday?: number;
+  turnOpen?: boolean;
+  canAct?: boolean;
+  roundEndsAt?: string | null;
 }
 
 interface CombatSummary {
@@ -183,8 +213,15 @@ export default function Home() {
   /** Immediate feedback when an in-game action fails (credits, caps, etc.). */
   const [actionError, setActionError] = useState<string | null>(null);
   const actionErrorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prevDayNumberRef = useRef<number | null>(null);
+  /** Door-game: detect turnOpen true→false so we can reset tickFired for the next auto-tick. */
+  const prevTurnOpenRef = useRef<boolean | null>(null);
   /** Stable id for refresh right after register/join before React state flushes. */
   const createdPlayerIdRef = useRef<string | null>(null);
+  /** After combat/intel modal, auto /tick must not overwrite turnPopup — queue situation report here. */
+  const deferSituationReportUntilPopupClosedRef = useRef(false);
+  const pendingTurnStartPopupRef = useRef<TurnPopupData | null>(null);
+  const pendingEndOfDayAfterModalChainRef = useRef(false);
 
   const [gameSessionId, setGameSessionId] = useState("");
   const [inviteCode, setInviteCode] = useState("");
@@ -214,6 +251,9 @@ export default function Home() {
   const [inputIsPublic, setInputIsPublic] = useState(true);
   const [inputTurnTimer, setInputTurnTimer] = useState("24h");
   const [inputMaxPlayers, setInputMaxPlayers] = useState(String(SESSION.MAX_PLAYERS_DEFAULT));
+  const [inputSimultaneousTurns, setInputSimultaneousTurns] = useState(false);
+  const [dayRolloverNotice, setDayRolloverNotice] = useState<{ completedDay: number } | null>(null);
+  const [endOfDayModal, setEndOfDayModal] = useState(false);
 
   const addEvent = useCallback((msg: string) => {
     setEvents((prev) => [`[T${prev.length}] ${msg}`, ...prev.slice(0, 199)]);
@@ -258,22 +298,47 @@ export default function Home() {
   }, []);
 
   const refreshState = useCallback(
-    async (name: string, playerId?: string | null) => {
+    async (name: string, playerId?: string | null): Promise<GameState | null> => {
       const qs = playerId
         ? `id=${encodeURIComponent(playerId)}`
         : `player=${encodeURIComponent(name)}`;
       const res = await fetch(`/api/game/status?${qs}`);
-      if (res.ok) {
-        const data = await res.json();
+      if (!res.ok) return null;
+      const raw = await res.text();
+      if (!raw.trim()) return null;
+      try {
+        const data = JSON.parse(raw) as GameState & {
+          empire?: { turnsLeft?: number };
+        };
         setGameState(data);
         setRefreshKey((k) => k + 1);
-        if (data.empire?.turnsLeft <= 0 && !gameOver) {
+        if (data.empire?.turnsLeft !== undefined && data.empire.turnsLeft <= 0 && !gameOver) {
           triggerGameOver(name);
         }
+        return data;
+      } catch {
+        /* ignore malformed status payload */
+        return null;
       }
     },
     [gameOver, triggerGameOver],
   );
+
+  const handleTurnPopupClose = useCallback(() => {
+    if (pendingTurnStartPopupRef.current) {
+      const next = pendingTurnStartPopupRef.current;
+      pendingTurnStartPopupRef.current = null;
+      deferSituationReportUntilPopupClosedRef.current = false;
+      setTurnPopup(next);
+      return;
+    }
+    setTurnPopup(null);
+    deferSituationReportUntilPopupClosedRef.current = false;
+    if (pendingEndOfDayAfterModalChainRef.current) {
+      pendingEndOfDayAfterModalChainRef.current = false;
+      setEndOfDayModal(true);
+    }
+  }, []);
 
   async function register() {
     setError("");
@@ -300,11 +365,22 @@ export default function Home() {
         isPublic: inputIsPublic,
         turnTimeoutSecs: parseTurnTimer(inputTurnTimer),
         maxPlayers: maxP,
+        turnMode: inputSimultaneousTurns ? "simultaneous" : "sequential",
       }),
     });
-    const data = await res.json();
+    const raw = await res.text();
+    let data: RegisterApiPayload = {};
+    if (raw.trim()) {
+      try {
+        data = JSON.parse(raw) as RegisterApiPayload;
+      } catch {
+        setError("Registration failed (server returned invalid data).");
+        setLoading(false);
+        return;
+      }
+    }
     if (!res.ok) {
-      setError(data.error ?? "Registration failed");
+      setError(apiErrorMessage(data, res, "Registration failed"));
       setLoading(false);
       return;
     }
@@ -576,10 +652,30 @@ export default function Home() {
     });
   }
 
+  async function handleSkipTurn() {
+    if (gameState?.turnMode === "simultaneous" && gameState.canAct && !gameState.turnOpen) {
+      try {
+        await fetch("/api/game/tick", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ playerName }),
+        });
+        await refreshState(
+          playerName,
+          createdPlayerIdRef.current ?? sessionPlayerId ?? gameState?.player.id,
+        );
+      } catch {
+        /* ignore */
+      }
+    }
+    await handleAction("end_turn");
+  }
+
   async function handleAction(action: string, params?: Record<string, unknown>) {
     setTurnProcessing(true);
     dismissActionError();
     let res: Response;
+    const simultaneous = gameState?.turnMode === "simultaneous";
     try {
       res = await fetch("/api/game/action", {
         method: "POST",
@@ -642,6 +738,7 @@ export default function Home() {
     // Covert / intelligence — same modal treatment as situation report (events block)
     const intelMsgs = details?.intelMessages;
     if (action === "covert_op" && Array.isArray(intelMsgs) && intelMsgs.length > 0) {
+      deferSituationReportUntilPopupClosedRef.current = true;
       setTurnPopup({
         mode: "intel_report",
         turn: gameState?.empire.turnsPlayed ?? 0,
@@ -692,6 +789,7 @@ export default function Home() {
         defenderCivilLevelsGained: crx.defenderCivilLevelsGained,
         defenderEffectivenessLost: crx.defenderEffectivenessLost,
       };
+      deferSituationReportUntilPopupClosedRef.current = true;
       setTurnPopup({
         mode: "action_result",
         turn: gameState?.empire.turnsPlayed ?? 0,
@@ -708,16 +806,29 @@ export default function Home() {
       });
     }
 
-    await refreshState(
+    const st = await refreshState(
       playerName,
       createdPlayerIdRef.current ?? sessionPlayerId ?? gameState?.player.id,
     );
+    const hadFullTurnsLeft = (gameState?.fullTurnsLeftToday ?? 0) > 0;
+    if (simultaneous && st?.fullTurnsLeftToday === 0 && hadFullTurnsLeft) {
+      if (deferSituationReportUntilPopupClosedRef.current) {
+        pendingEndOfDayAfterModalChainRef.current = true;
+      } else {
+        setEndOfDayModal(true);
+      }
+    }
     setTurnProcessing(false);
   }
 
   // Run turn tick when it becomes our turn
   useEffect(() => {
-    if (!gameState || gameState.isYourTurn !== true || !playerName || tickFired || turnProcessing) return;
+    if (!gameState || !playerName || tickFired || turnProcessing) return;
+    const simultaneous = gameState.turnMode === "simultaneous";
+    const needTick = simultaneous
+      ? gameState.canAct === true && gameState.turnOpen === false
+      : gameState.isYourTurn === true;
+    if (!needTick) return;
     setTickFired(true);
 
     (async () => {
@@ -743,7 +854,7 @@ export default function Home() {
           }
           addEvent(`───────────────────────────────────`);
 
-          setTurnPopup({
+          const turnStartPayload: TurnPopupData = {
             mode: "turn_start",
             turn: gameState.empire.turnsPlayed,
             action: "Turn Start",
@@ -755,13 +866,30 @@ export default function Home() {
             civilStatus: r.civilStatus,
             netWorth: r.netWorth,
             events: r.events,
-          });
+          };
+          if (deferSituationReportUntilPopupClosedRef.current) {
+            pendingTurnStartPopupRef.current = turnStartPayload;
+          } else {
+            setTurnPopup(turnStartPayload);
+          }
           // Refresh state to show post-tick values
           await refreshState(playerName, gameState.player.id);
         }
       } catch { /* ignore tick errors */ }
     })();
-  }, [gameState?.isYourTurn, playerName, tickFired, turnProcessing, addEvent, refreshState, gameState?.empire.turnsPlayed, gameState?.player.id]);
+  }, [
+    gameState?.isYourTurn,
+    gameState?.turnMode,
+    gameState?.canAct,
+    gameState?.turnOpen,
+    playerName,
+    tickFired,
+    turnProcessing,
+    addEvent,
+    refreshState,
+    gameState?.empire.turnsPlayed,
+    gameState?.player.id,
+  ]);
 
   // Reset tickFired when it's no longer our turn
   useEffect(() => {
@@ -770,9 +898,37 @@ export default function Home() {
     }
   }, [gameState?.isYourTurn]);
 
-  // Poll for turn updates (AI or other human players)
+  // Door-game: closing a full turn (end_turn) sets turnOpen false; isYourTurn stays true while
+  // canAct, so tickFired would never reset and auto /tick would not run for the next full turn.
   useEffect(() => {
-    if (!gameState || gameState.isYourTurn !== false || turnProcessing) return;
+    if (gameState?.turnMode !== "simultaneous") return;
+    const open = gameState.turnOpen === true;
+    const prev = prevTurnOpenRef.current;
+    prevTurnOpenRef.current = open;
+    if (prev === true && open === false) {
+      setTickFired(false);
+    }
+  }, [gameState?.turnMode, gameState?.turnOpen]);
+
+  useEffect(() => {
+    if (gameState?.turnMode === "simultaneous") {
+      setTickFired(false);
+    }
+  }, [gameState?.dayNumber, gameState?.turnMode]);
+
+  useEffect(() => {
+    if (!gameState || gameState.turnMode !== "simultaneous" || gameState.dayNumber == null) return;
+    const d = gameState.dayNumber;
+    if (prevDayNumberRef.current !== null && d > prevDayNumberRef.current) {
+      setDayRolloverNotice({ completedDay: prevDayNumberRef.current });
+    }
+    prevDayNumberRef.current = d;
+  }, [gameState?.dayNumber, gameState?.turnMode]);
+
+  // Poll for turn updates (AI, other humans, or door-game round rollover)
+  useEffect(() => {
+    if (!gameState || turnProcessing) return;
+    if (gameState.turnMode !== "simultaneous" && gameState.isYourTurn !== false) return;
     const interval = setInterval(async () => {
       try {
         const res = await fetch(`/api/game/status?id=${gameState.player.id}`);
@@ -784,7 +940,7 @@ export default function Home() {
       } catch { /* ignore polling errors */ }
     }, 2000);
     return () => clearInterval(interval);
-  }, [gameState?.isYourTurn, gameState?.player.id, turnProcessing]);
+  }, [gameState?.isYourTurn, gameState?.turnMode, gameState?.player.id, turnProcessing]);
 
   // ─── LOGIN / REGISTER SCREEN ───
   if (!playerName && setupPhase === "login") {
@@ -1176,6 +1332,21 @@ export default function Home() {
               onChange={(e) => setInputMaxPlayers(e.target.value)}
             />
           </div>
+          <div className="flex items-center justify-between border border-green-800 p-3">
+            <div>
+              <div className="text-green-400 text-xs font-bold">Simultaneous turns</div>
+              <div className="text-green-700 text-[10px]">
+                All players submit each move before the round resolves (5 moves per day). Otherwise one player at a time.
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setInputSimultaneousTurns(!inputSimultaneousTurns)}
+              className={`border px-3 py-1 text-xs ${inputSimultaneousTurns ? "border-yellow-600 text-yellow-400" : "border-green-600 text-green-400"}`}
+            >
+              {inputSimultaneousTurns ? "ON" : "OFF"}
+            </button>
+          </div>
 
           <div className="border-t border-green-900 pt-4">
             <div className="text-green-500 text-xs font-bold tracking-wider mb-1">AI OPPONENTS (OPTIONAL)</div>
@@ -1248,6 +1419,44 @@ export default function Home() {
             <>
               {gameState.waitingForGameStart ? (
                 <span className="font-bold text-cyan-600">▸ LOBBY — GALAXY NOT STARTED</span>
+              ) : gameState.turnMode === "simultaneous" ? (
+                <>
+                  <span className="text-green-600">
+                    D{gameState.dayNumber ?? 1} · {gameState.fullTurnsLeftToday ?? 0}/{gameState.actionsPerDay ?? 5} full turns
+                  </span>
+                  <span
+                    className={`font-bold ${
+                      gameState.empire.turnsLeft < 1
+                        ? "text-red-400"
+                        : gameState.turnOpen
+                          ? "text-cyan-400"
+                          : "text-yellow-400"
+                    }`}
+                    title={
+                      gameState.empire.turnsLeft < 1
+                        ? "No game turns remaining."
+                        : gameState.canAct === false
+                          ? "You used all full turns for this calendar day, or you are waiting for other commanders. When the round timer expires, unused full turns are skipped and the next calendar day begins."
+                          : gameState.turnOpen
+                            ? "This full turn is open — take actions, then end turn when done."
+                            : "Begin this full turn with your situation report (economy update). Usually starts automatically; use Skip if needed."
+                    }
+                  >
+                    {gameState.empire.turnsLeft < 1
+                      ? "▸ NO TURNS LEFT"
+                      : gameState.canAct === false
+                        ? "▸ WAITING FOR OTHERS"
+                        : gameState.turnOpen
+                          ? "▸ TURN OPEN"
+                          : "▸ START FULL TURN"}
+                  </span>
+                  {(gameState.roundEndsAt ?? gameState.turnDeadline) && (
+                    <TurnTimer
+                      deadline={(gameState.roundEndsAt ?? gameState.turnDeadline) as string}
+                      isYourTurn={gameState.canAct !== false}
+                    />
+                  )}
+                </>
               ) : (
                 <>
                   <span className={`font-bold ${gameState.isYourTurn !== false ? "text-cyan-400" : "text-yellow-400"}`}>
@@ -1314,13 +1523,25 @@ export default function Home() {
           <div className="lg:col-span-5 lg:min-h-[calc(100vh-7rem)]">
             <ActionPanel
               onAction={handleAction}
+              onSkipTurn={handleSkipTurn}
               state={gameState}
               targetName={targetName}
               onTargetChange={setTargetName}
               rivalNames={rivalNames}
-              disabled={turnProcessing || gameState?.isYourTurn === false}
+              disabled={
+                turnProcessing ||
+                (gameState?.turnMode === "simultaneous"
+                  ? !gameState?.canAct || !gameState?.turnOpen
+                  : gameState?.isYourTurn === false)
+              }
+              skipDisabled={
+                turnProcessing ||
+                (gameState?.turnMode === "simultaneous"
+                  ? gameState?.canAct === false
+                  : gameState?.isYourTurn === false)
+              }
             turnProcessing={turnProcessing}
-              currentTurnPlayer={gameState?.currentTurnPlayer ?? null}
+              currentTurnPlayer={gameState?.turnMode === "simultaneous" ? null : (gameState?.currentTurnPlayer ?? null)}
               turnOrder={gameState?.turnOrder}
               sessionInfo={gameSessionId ? {
                 gameSessionId,
@@ -1340,8 +1561,62 @@ export default function Home() {
         </div>
       </div>
 
+      {dayRolloverNotice && !gameOver && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/85 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="day-rollover-title"
+        >
+          <div className="border border-yellow-600 bg-black p-6 max-w-md text-center shadow-xl">
+            <p id="day-rollover-title" className="text-yellow-400 font-bold mb-2 tracking-wider">
+              DAY {dayRolloverNotice.completedDay} COMPLETE
+            </p>
+            <p className="text-green-500 text-sm mb-4 leading-relaxed">
+              A new calendar day has begun. Each commander gets up to five full turns (tick → actions → end) per day; your game turn counter drops once when the day completes.
+            </p>
+            <button
+              type="button"
+              className="border border-green-600 px-4 py-2 text-cyan-400 hover:bg-green-950 font-mono"
+              onClick={() => setDayRolloverNotice(null)}
+            >
+              OK
+            </button>
+          </div>
+        </div>
+      )}
+
+      {endOfDayModal && !gameOver && gameState?.turnMode === "simultaneous" && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/85 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="end-of-day-title"
+        >
+          <div className="border border-cyan-700 bg-black p-6 max-w-md text-center shadow-xl">
+            <p id="end-of-day-title" className="text-cyan-400 font-bold mb-2 tracking-wider">
+              DAY COMPLETE FOR YOU
+            </p>
+            <p className="text-green-500 text-sm mb-2 leading-relaxed">
+              You have used all {gameState.actionsPerDay ?? 5} full turns today. Credits: {gameState.empire.credits.toLocaleString()} · Net worth:{" "}
+              {gameState.empire.netWorth.toLocaleString()}
+            </p>
+            <p className="text-green-700 text-xs mb-4">
+              Your day is complete. The galaxy may still be active — other commanders may still be playing this round.
+            </p>
+            <button
+              type="button"
+              className="border border-green-600 px-4 py-2 text-cyan-400 hover:bg-green-950 font-mono"
+              onClick={() => setEndOfDayModal(false)}
+            >
+              OK
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Turn Summary Popup */}
-      {turnPopup && !gameOver && <TurnSummaryModal data={turnPopup} onClose={() => setTurnPopup(null)} />}
+      {turnPopup && !gameOver && <TurnSummaryModal data={turnPopup} onClose={handleTurnPopupClose} />}
 
       {/* Game Over Screen */}
       {gameOver && <GameOverScreen data={gameOver} playerName={playerName} onExportLog={async () => {

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import {
   register,
   joinGame,
@@ -12,6 +12,8 @@ import {
   api,
   postGameOver,
   runAI,
+  scheduleTestGalaxyDeletion,
+  deleteTestGalaxySession,
 } from "./helpers";
 
 describe("E2E: auxiliary API routes", () => {
@@ -41,7 +43,7 @@ describe("E2E: auxiliary API routes", () => {
     const name = uniqueName("GOE2E");
     const { status: regStatus, data: reg } = await register(name, "testpass", { galaxyName: uniqueGalaxy("GOGal") });
     expect(regStatus).toBe(201);
-    void reg;
+    scheduleTestGalaxyDeletion((reg as { gameSessionId?: string }).gameSessionId);
     const { status, data } = await postGameOver(name);
     expect(status).toBe(200);
     const d = data as { gameOver: boolean; standings: unknown[]; winner: string };
@@ -58,6 +60,7 @@ describe("E2E: auxiliary API routes", () => {
   it("POST /api/ai/run-all returns results array (empty when human's turn)", async () => {
     const name = uniqueName("RunAllE2E");
     const { data } = await register(name, "testpass", { galaxyName: uniqueGalaxy("RunAllGal") });
+    scheduleTestGalaxyDeletion(data.gameSessionId as string);
     const { status, data: out } = await runAI(data.gameSessionId as string);
     expect(status).toBe(200);
     expect(Array.isArray((out as { results: unknown[] }).results)).toBe(true);
@@ -65,7 +68,8 @@ describe("E2E: auxiliary API routes", () => {
 
   it("POST /api/ai/turn rejects non-AI player", async () => {
     const name = uniqueName("NotAI");
-    await register(name, "testpass", { galaxyName: uniqueGalaxy("AiTurnGal") });
+    const { data: reg } = await register(name, "testpass", { galaxyName: uniqueGalaxy("AiTurnGal") });
+    scheduleTestGalaxyDeletion((reg as { gameSessionId?: string }).gameSessionId);
     const { status } = await api("/api/ai/turn", {
       method: "POST",
       body: JSON.stringify({ playerName: name }),
@@ -82,11 +86,17 @@ describe("E2E: auxiliary API routes", () => {
     const a = uniqueName("MsgA");
     const b = uniqueName("MsgB");
     const password = "testpass";
+    let sessionId: string;
 
     beforeAll(async () => {
       const { data } = await register(a, password, { galaxyName: uniqueGalaxy("MsgGal") });
+      sessionId = data.gameSessionId as string;
       const invite = data.inviteCode as string;
       await joinGame(b, password, { inviteCode: invite });
+    });
+
+    afterAll(async () => {
+      await deleteTestGalaxySession(sessionId);
     });
 
     it("POST and GET /api/game/messages", async () => {

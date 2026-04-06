@@ -7,9 +7,14 @@
 import { prisma } from "./prisma";
 import { processAction, type ActionType, type TurnReport } from "./game-engine";
 import { generatePlanetName, START, PLANET_CONFIG } from "./game-constants";
+import { getAvailableTech } from "./research";
 import * as rng from "./rng";
 import { setSeed } from "./rng";
-import type { PlanetType } from "@prisma/client";
+import type { PlanetType, Prisma } from "@prisma/client";
+
+export type EmpireForStrategySim = Prisma.EmpireGetPayload<{
+  include: { planets: true; army: true; research: true };
+}>;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -26,6 +31,10 @@ export interface SimConfig {
   verbosity: number;
   /** Player strategies to use */
   strategies?: SimStrategy[];
+  /** Set by session harness when using a real `GameSession`. */
+  turnMode?: "sequential" | "simultaneous";
+  /** Door-game: full turns per empire per calendar day (session harness only). */
+  actionsPerDay?: number;
 }
 
 export type SimStrategy =
@@ -33,7 +42,22 @@ export type SimStrategy =
   | "economy_rush"
   | "military_rush"
   | "turtle"
-  | "random";
+  | "random"
+  | "research_rush"
+  | "credit_leverage"
+  | "growth_focus";
+
+/** Default roster when `strategies` is omitted (one per player, cycling). */
+export const DEFAULT_SIM_STRATEGIES: SimStrategy[] = [
+  "balanced",
+  "economy_rush",
+  "military_rush",
+  "turtle",
+  "random",
+  "research_rush",
+  "credit_leverage",
+  "growth_focus",
+];
 
 export interface TurnSnapshot {
   turn: number;
@@ -57,12 +81,20 @@ export interface TurnSnapshot {
   events: string[];
 }
 
+export type SessionSimMeta = {
+  sessionId: string;
+  turnMode: "sequential" | "simultaneous";
+  galaxyName: string;
+};
+
 export interface SimResult {
   config: SimConfig;
   snapshots: TurnSnapshot[];
   summary: PlayerSummary[];
   balanceWarnings: string[];
   elapsedMs: number;
+  /** Present when `runSessionSimulation` created a real galaxy session. */
+  sessionMeta?: SessionSimMeta;
 }
 
 export interface PlayerSummary {
@@ -83,7 +115,7 @@ export interface PlayerSummary {
 // Strategy logic — decides what action to take each turn
 // ---------------------------------------------------------------------------
 
-interface StrategyContext {
+export interface StrategyContext {
   credits: number;
   food: number;
   ore: number;
@@ -103,6 +135,60 @@ interface StrategyContext {
   carriers: number;
   covertAgents: number;
   effectiveness: number;
+  researchPoints: number;
+  unlockedTechIds: string[];
+  activeLoanCount: number;
+}
+
+export function strategyContextFromEmpire(empire: EmpireForStrategySim, activeLoanCount: number): StrategyContext {
+  const army = empire.army;
+  if (!army) {
+    throw new Error("strategyContextFromEmpire: empire has no army");
+  }
+  const planetCounts: { type: string; count: number }[] = [];
+  const countMap: Record<string, number> = {};
+  for (const pl of empire.planets) {
+    countMap[pl.type] = (countMap[pl.type] || 0) + 1;
+  }
+  for (const [type, count] of Object.entries(countMap)) {
+    planetCounts.push({ type, count });
+  }
+  return {
+    credits: empire.credits,
+    food: empire.food,
+    ore: empire.ore,
+    fuel: empire.fuel,
+    population: empire.population,
+    taxRate: empire.taxRate,
+    civilStatus: empire.civilStatus,
+    turnsPlayed: empire.turnsPlayed,
+    planets: planetCounts,
+    totalPlanets: empire.planets.length,
+    soldiers: army.soldiers,
+    generals: army.generals,
+    fighters: army.fighters,
+    defenseStations: army.defenseStations,
+    lightCruisers: army.lightCruisers,
+    heavyCruisers: army.heavyCruisers,
+    carriers: army.carriers,
+    covertAgents: army.covertAgents,
+    effectiveness: army.effectiveness,
+    researchPoints: empire.research?.accumulatedPoints ?? 0,
+    unlockedTechIds: empire.research?.unlockedTechIds ?? [],
+    activeLoanCount,
+  };
+}
+
+export async function buildStrategyContextForEmpire(empireId: string): Promise<StrategyContext | null> {
+  const [empire, activeLoanCount] = await Promise.all([
+    prisma.empire.findUnique({
+      where: { id: empireId },
+      include: { planets: true, army: true, research: true },
+    }),
+    prisma.loan.count({ where: { empireId } }),
+  ]);
+  if (!empire?.army) return null;
+  return strategyContextFromEmpire(empire, activeLoanCount);
 }
 
 function countType(ctx: StrategyContext, type: string): number {
@@ -119,10 +205,20 @@ function pickAction(strategy: SimStrategy, ctx: StrategyContext, turn: number): 
       return turtleStrategy(ctx, turn);
     case "random":
       return randomStrategy(ctx);
+    case "research_rush":
+      return researchStrategy(ctx, turn);
+    case "credit_leverage":
+      return creditLeverageStrategy(ctx, turn);
+    case "growth_focus":
+      return growthFocusStrategy(ctx, turn);
     case "balanced":
     default:
       return balancedStrategy(ctx, turn);
   }
+}
+
+export function pickSimAction(strategy: SimStrategy, ctx: StrategyContext, turn: number) {
+  return pickAction(strategy, ctx, turn);
 }
 
 function balancedStrategy(ctx: StrategyContext, turn: number): { action: ActionType; params: Record<string, unknown> } {
@@ -239,6 +335,72 @@ function randomStrategy(ctx: StrategyContext): { action: ActionType; params: Rec
   return actions[Math.floor(rng.random() * actions.length)];
 }
 
+function researchStrategy(ctx: StrategyContext, turn: number): { action: ActionType; params: Record<string, unknown> } {
+  if (turn === 0) return { action: "set_sell_rates", params: { foodSellRate: 0, oreSellRate: 50, petroleumSellRate: 50 } };
+  if (turn === 1 && ctx.taxRate > 20) return { action: "set_tax_rate", params: { rate: 20 } };
+
+  const available = getAvailableTech(ctx.unlockedTechIds);
+  const affordable = available
+    .filter((t) => ctx.researchPoints >= t.cost)
+    .sort((a, b) => a.cost - b.cost);
+  if (affordable.length > 0) {
+    return { action: "discover_tech", params: { techId: affordable[0].id } };
+  }
+
+  if (countType(ctx, "URBAN") < 4 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "URBAN" } };
+  if (countType(ctx, "FOOD") < 4 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "FOOD" } };
+  if (countType(ctx, "ORE") < 4 && ctx.credits >= 10000) return { action: "buy_planet", params: { type: "ORE" } };
+  if (countType(ctx, "TOURISM") < 2 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "TOURISM" } };
+  if (countType(ctx, "GOVERNMENT") < 2 && ctx.credits >= 12000) return { action: "buy_planet", params: { type: "GOVERNMENT" } };
+
+  if (ctx.soldiers < 400 && ctx.credits >= 14000) return { action: "buy_soldiers", params: { amount: 40 } };
+  if (ctx.fighters < 30 && ctx.credits >= 3800) return { action: "buy_fighters", params: { amount: 10 } };
+  if (ctx.soldiers > 80 && ctx.fighters > 8) return { action: "attack_pirates", params: {} };
+
+  if (
+    countType(ctx, "RESEARCH") < 10 &&
+    ctx.credits >= Math.max(55000, PLANET_CONFIG.RESEARCH.baseCost * 2) &&
+    ctx.civilStatus <= 3
+  ) {
+    return { action: "buy_planet", params: { type: "RESEARCH" } };
+  }
+
+  if (ctx.lightCruisers < 15 && ctx.credits >= 9500 && turn > 40) return { action: "buy_light_cruisers", params: { amount: 10 } };
+  return { action: "end_turn", params: {} };
+}
+
+function creditLeverageStrategy(ctx: StrategyContext, turn: number): { action: ActionType; params: Record<string, unknown> } {
+  if (turn === 0) return { action: "set_sell_rates", params: { foodSellRate: 0, oreSellRate: 52, petroleumSellRate: 52 } };
+  if (turn === 1 && ctx.taxRate > 22) return { action: "set_tax_rate", params: { rate: 22 } };
+  if (ctx.activeLoanCount < 3 && ctx.credits < 130000 && turn >= 2 && turn < 28) {
+    return { action: "bank_loan", params: { amount: 100000 } };
+  }
+
+  if (countType(ctx, "URBAN") < 5 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "URBAN" } };
+  if (countType(ctx, "ORE") < 5 && ctx.credits >= 10000) return { action: "buy_planet", params: { type: "ORE" } };
+  if (countType(ctx, "TOURISM") < 3 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "TOURISM" } };
+  if (countType(ctx, "FOOD") < 4 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "FOOD" } };
+  if (countType(ctx, "GOVERNMENT") < 2 && ctx.credits >= 12000) return { action: "buy_planet", params: { type: "GOVERNMENT" } };
+  if (ctx.lightCruisers < 18 && ctx.credits >= 9500 && turn > 35) return { action: "buy_light_cruisers", params: { amount: 10 } };
+  if (turn > 65 && ctx.soldiers > 100) return { action: "attack_pirates", params: {} };
+  return { action: "end_turn", params: {} };
+}
+
+function growthFocusStrategy(ctx: StrategyContext, turn: number): { action: ActionType; params: Record<string, unknown> } {
+  if (turn === 0) return { action: "set_sell_rates", params: { foodSellRate: 0, oreSellRate: 45, petroleumSellRate: 45 } };
+  if (turn === 1 && ctx.taxRate > 15) return { action: "set_tax_rate", params: { rate: 15 } };
+
+  if (countType(ctx, "FOOD") < 6 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "FOOD" } };
+  if (countType(ctx, "URBAN") < 6 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "URBAN" } };
+  if (countType(ctx, "EDUCATION") < 3 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "EDUCATION" } };
+  if (countType(ctx, "ORE") < 3 && ctx.credits >= 10000) return { action: "buy_planet", params: { type: "ORE" } };
+  if (countType(ctx, "TOURISM") < 2 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "TOURISM" } };
+
+  if (turn > 55 && ctx.soldiers > 80 && ctx.fighters > 8) return { action: "attack_pirates", params: {} };
+  if (turn > 45 && ctx.lightCruisers < 12 && ctx.credits >= 9500) return { action: "buy_light_cruisers", params: { amount: 5 } };
+  return { action: "end_turn", params: {} };
+}
+
 // ---------------------------------------------------------------------------
 // Main simulation runner
 // ---------------------------------------------------------------------------
@@ -256,8 +418,7 @@ export async function runSimulation(config: SimConfig): Promise<SimResult> {
   if (marketCount === 0) await prisma.market.create({ data: {} });
 
   // Create players
-  const strategies: SimStrategy[] = config.strategies ??
-    (["balanced", "economy_rush", "military_rush", "turtle", "random"] as SimStrategy[]).slice(0, config.playerCount);
+  const strategies: SimStrategy[] = config.strategies ?? DEFAULT_SIM_STRATEGIES.slice(0, config.playerCount);
 
   const playerIds: { id: string; playerId: string; name: string; strategy: SimStrategy }[] = [];
 
@@ -330,44 +491,18 @@ export async function runSimulation(config: SimConfig): Promise<SimResult> {
   for (let turn = 0; turn < config.turns; turn++) {
     for (const p of playerIds) {
       // Fetch current state for strategy decisions
-      const empire = await prisma.empire.findUnique({
-        where: { id: p.id },
-        include: { planets: true, army: true },
-      });
+      const [empire, activeLoanCount] = await Promise.all([
+        prisma.empire.findUnique({
+          where: { id: p.id },
+          include: { planets: true, army: true, research: true },
+        }),
+        prisma.loan.count({ where: { empireId: p.id } }),
+      ]);
 
       if (!empire || !empire.army || empire.turnsLeft < 1) continue;
       if (empire.population < 10) continue;
 
-      const planetCounts: { type: string; count: number }[] = [];
-      const countMap: Record<string, number> = {};
-      for (const pl of empire.planets) {
-        countMap[pl.type] = (countMap[pl.type] || 0) + 1;
-      }
-      for (const [type, count] of Object.entries(countMap)) {
-        planetCounts.push({ type, count });
-      }
-
-      const ctx: StrategyContext = {
-        credits: empire.credits,
-        food: empire.food,
-        ore: empire.ore,
-        fuel: empire.fuel,
-        population: empire.population,
-        taxRate: empire.taxRate,
-        civilStatus: empire.civilStatus,
-        turnsPlayed: empire.turnsPlayed,
-        planets: planetCounts,
-        totalPlanets: empire.planets.length,
-        soldiers: empire.army.soldiers,
-        generals: empire.army.generals,
-        fighters: empire.army.fighters,
-        defenseStations: empire.army.defenseStations,
-        lightCruisers: empire.army.lightCruisers,
-        heavyCruisers: empire.army.heavyCruisers,
-        carriers: empire.army.carriers,
-        covertAgents: empire.army.covertAgents,
-        effectiveness: empire.army.effectiveness,
-      };
+      const ctx = strategyContextFromEmpire(empire, activeLoanCount);
 
       const { action, params } = pickAction(p.strategy, ctx, turn);
 
@@ -415,8 +550,21 @@ export async function runSimulation(config: SimConfig): Promise<SimResult> {
     }
   }
 
-  // Build summaries
+  const { summary, balanceWarnings: bw } = await finalizeSimSummaries(config, snapshots, playerIds);
+  balanceWarnings.push(...bw);
+
+  const elapsedMs = Date.now() - startTime;
+
+  return { config, snapshots, summary, balanceWarnings, elapsedMs };
+}
+
+export async function finalizeSimSummaries(
+  _config: SimConfig,
+  snapshots: TurnSnapshot[],
+  playerIds: { id: string; playerId: string; name: string; strategy: SimStrategy }[],
+): Promise<{ summary: PlayerSummary[]; balanceWarnings: string[] }> {
   const summary: PlayerSummary[] = [];
+  const balanceWarnings: string[] = [];
 
   for (const p of playerIds) {
     const empire = await prisma.empire.findUnique({
@@ -449,7 +597,6 @@ export async function runSimulation(config: SimConfig): Promise<SimResult> {
     });
   }
 
-  // Balance checks
   for (const s of summary) {
     if (s.collapsed && s.turnsPlayed < 20) {
       balanceWarnings.push(`${s.name} (${s.strategy}) collapsed by turn ${s.turnsPlayed} — early game may be too punishing.`);
@@ -465,9 +612,7 @@ export async function runSimulation(config: SimConfig): Promise<SimResult> {
     }
   }
 
-  const elapsedMs = Date.now() - startTime;
-
-  return { config, snapshots, summary, balanceWarnings, elapsedMs };
+  return { summary, balanceWarnings };
 }
 
 // ---------------------------------------------------------------------------
@@ -480,7 +625,18 @@ export function printSimReport(result: SimResult): void {
   console.log(`\n${"=".repeat(80)}`);
   console.log(`  SRX SIMULATION REPORT`);
   console.log(`${"=".repeat(80)}`);
-  console.log(`  Turns: ${config.turns} | Players: ${config.playerCount} | Seed: ${config.seed ?? "random"}`);
+  const modeLine =
+    config.turnMode != null
+      ? ` | Mode: ${config.turnMode}${config.actionsPerDay != null ? ` (apd=${config.actionsPerDay})` : ""}`
+      : "";
+  console.log(
+    `  Turns: ${config.turns} | Players: ${config.playerCount} | Seed: ${config.seed ?? "random"}${modeLine}`,
+  );
+  if (result.sessionMeta) {
+    console.log(
+      `  Galaxy: ${result.sessionMeta.galaxyName} (${result.sessionMeta.turnMode}) — session deleted after run`,
+    );
+  }
   console.log(`  Elapsed: ${(elapsedMs / 1000).toFixed(2)}s | Turns/sec: ${(config.turns * config.playerCount / (elapsedMs / 1000)).toFixed(0)}`);
   console.log(`  Total snapshots: ${snapshots.length}\n`);
 

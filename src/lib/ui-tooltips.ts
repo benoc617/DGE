@@ -12,6 +12,7 @@ export const LEADERBOARD = {
   worth: "Net worth — primary score for victory and ranking.",
   pop: "Population (abbreviated: k = thousands, M = millions).",
   plt: "Number of colonized planets.",
+  turns: "Turns — economy ticks completed (Empire.turnsPlayed): each door-game full turn or sequential turn tick counts as one.",
   mil: `Military index (comparison only): soldiers + fighters×2 + light cruisers×4 + heavy cruisers×10 — not total raw units.`,
 } as const;
 

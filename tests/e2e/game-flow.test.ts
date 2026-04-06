@@ -1,5 +1,16 @@
-import { describe, it, expect, beforeAll } from "vitest";
-import { register, login, getStatus, doAction, doTick, setupAI, uniqueName, uniqueGalaxy } from "./helpers";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import {
+  register,
+  login,
+  getStatus,
+  doAction,
+  doTick,
+  setupAI,
+  uniqueName,
+  uniqueGalaxy,
+  deleteTestGalaxySession,
+  scheduleTestGalaxyDeletion,
+} from "./helpers";
 
 describe("E2E: Game Flow", () => {
   describe("registration and login", () => {
@@ -40,6 +51,10 @@ describe("E2E: Game Flow", () => {
       const { status } = await register(uniqueName(), "ab");
       expect(status).toBe(400);
     });
+
+    afterAll(async () => {
+      await deleteTestGalaxySession(sessionId);
+    });
   });
 
   describe("taking actions", () => {
@@ -52,6 +67,10 @@ describe("E2E: Game Flow", () => {
       const { data } = await register(name, password, { galaxyName: uniqueGalaxy() });
       playerId = data.id;
       sessionId = data.gameSessionId;
+    });
+
+    afterAll(async () => {
+      await deleteTestGalaxySession(sessionId);
     });
 
     it("POST /api/game/tick returns turn report on first call", async () => {
@@ -78,11 +97,11 @@ describe("E2E: Game Flow", () => {
     it("end_turn without prior tick still works (inline tick + turnReport fallback)", async () => {
       const solo = uniqueName("InlineTick");
       const { data: reg } = await register(solo, password, { galaxyName: uniqueGalaxy() });
+      scheduleTestGalaxyDeletion(reg.gameSessionId as string);
       const { status, data } = await doAction(solo, "end_turn");
       expect(status).toBe(200);
       expect(data.success).toBe(true);
       expect(data.turnReport).toBeDefined();
-      void reg;
     });
 
     it("status reflects updated turns", async () => {
@@ -112,6 +131,10 @@ describe("E2E: Game Flow", () => {
       const { data } = await register(name, password, { galaxyName: uniqueGalaxy() });
       playerId = data.id;
       sessionId = data.gameSessionId;
+    });
+
+    afterAll(async () => {
+      await deleteTestGalaxySession(sessionId);
     });
 
     it("can set up AI opponents", async () => {

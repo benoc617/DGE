@@ -1,5 +1,16 @@
-import { describe, it, expect, beforeAll } from "vitest";
-import { register, joinGame, getStatus, doAction, doTick, setupAI, getSession, uniqueName, uniqueGalaxy } from "./helpers";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import {
+  register,
+  joinGame,
+  getStatus,
+  doAction,
+  doTick,
+  setupAI,
+  getSession,
+  uniqueName,
+  uniqueGalaxy,
+  deleteTestGalaxySession,
+} from "./helpers";
 
 describe("E2E: Multiplayer Turn Order", () => {
   const galaxy = uniqueGalaxy("MPTest");
@@ -17,6 +28,10 @@ describe("E2E: Multiplayer Turn Order", () => {
     player1Id = data.id;
     sessionId = data.gameSessionId;
     inviteCode = data.inviteCode;
+  });
+
+  afterAll(async () => {
+    await deleteTestGalaxySession(sessionId);
   });
 
   it("player 2 joins via invite code", async () => {
@@ -100,6 +115,10 @@ describe("E2E: Multiplayer with AI", () => {
     await setupAI(["Admiral Koss"], sessionId);
   });
 
+  afterAll(async () => {
+    await deleteTestGalaxySession(sessionId);
+  });
+
   it("has human + AI in turn order", async () => {
     const { data } = await getStatus(humanId);
     expect(data.turnOrder.length).toBe(2);
@@ -114,7 +133,8 @@ describe("E2E: Multiplayer with AI", () => {
     const { data } = await doAction(humanName, "end_turn");
     expect(data.success).toBe(true);
     expect(data.aiResults).toBeUndefined();
-    for (let i = 0; i < 40; i++) {
+    // AI uses Gemini when configured; allow up to ~60s for slow API responses
+    for (let i = 0; i < 120; i++) {
       const st = await getStatus(humanId);
       if (st.data.isYourTurn) break;
       await new Promise((r) => setTimeout(r, 500));
@@ -150,6 +170,10 @@ describe("E2E: Mid-game join", () => {
     await doAction(player1Name, "end_turn");
     await doTick(player1Name);
     await doAction(player1Name, "end_turn");
+  });
+
+  afterAll(async () => {
+    await deleteTestGalaxySession(sessionId);
   });
 
   it("player 2 joins after game has started", async () => {

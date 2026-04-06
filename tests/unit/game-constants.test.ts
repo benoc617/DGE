@@ -97,6 +97,11 @@ describe("game-constants", () => {
         expect(PLANET_CONFIG[type].baseCost).toBeGreaterThan(0);
       }
     });
+
+    it("RESEARCH labs are priced to encourage tech play vs other premium types", () => {
+      expect(PLANET_CONFIG.RESEARCH.baseCost).toBe(25000);
+      expect(PLANET_CONFIG.RESEARCH.baseCost).toBeLessThanOrEqual(PLANET_CONFIG.SUPPLY.baseCost * 1.5);
+    });
   });
 
   describe("START", () => {

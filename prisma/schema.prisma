@@ -6,6 +6,11 @@ datasource db {
   provider = "postgresql"
 }
 
+enum TurnMode {
+  sequential
+  simultaneous
+}
+
 enum PlanetType {
   FOOD
   ORE
@@ -77,6 +82,10 @@ model Empire {
   isProtected     Boolean @default(true)
   protectionTurns Int     @default(20)
   tickProcessed   Boolean @default(false)
+  /** Door-game (simultaneous) mode: economy tick ran but end_turn not yet issued for this full turn. */
+  turnOpen                 Boolean @default(false)
+  /** Door-game mode: full turns (tick → actions → end_turn) consumed this calendar round. */
+  fullTurnsUsedThisRound   Int     @default(0)
 
   /** Queued messages shown on the defender's next turn situation report (ALERT lines). */
   pendingDefenderAlerts String[] @default([])
@@ -326,6 +335,13 @@ model GameSession {
   log          Json[]   @default([])
   startedAt    DateTime @default(now())
   finishedAt   DateTime?
+
+  turnMode          TurnMode   @default(sequential)
+  /** Calendar day counter (door-game / simultaneous mode). */
+  dayNumber         Int        @default(1)
+  actionsPerDay     Int        @default(5)
+  /** When the current round (day) started; round timer = roundStartedAt + turnTimeoutSecs. */
+  roundStartedAt    DateTime?
 
   players    Player[]
   gameEvents GameEvent[]

@@ -4,6 +4,117 @@ import { processAction, runAndPersistTick, type ActionType } from "@/lib/game-en
 import { processAiMoveOrSkip } from "@/lib/ai-process-move";
 import { getCurrentTurn, advanceTurn } from "@/lib/turn-order";
 
+function paramsFromAIMove(move: Awaited<ReturnType<typeof getAIMove>>): Record<string, unknown> {
+  const params: Record<string, unknown> = {};
+  if (move.target) params.target = move.target;
+  if (move.amount) params.amount = move.amount;
+  if (move.type) params.type = move.type;
+  if (move.rate !== undefined) params.rate = move.rate;
+  if (move.techId) params.techId = move.techId;
+  if (move.opType !== undefined) params.opType = move.opType;
+  if (move.resource) params.resource = move.resource;
+  if (move.foodSellRate !== undefined) params.foodSellRate = move.foodSellRate;
+  if (move.oreSellRate !== undefined) params.oreSellRate = move.oreSellRate;
+  if (move.petroleumSellRate !== undefined) params.petroleumSellRate = move.petroleumSellRate;
+  if (move.name) params.name = move.name;
+  if (move.treatyType) params.treatyType = move.treatyType;
+  return params;
+}
+
+/**
+ * Pick an AI move without running a tick or persisting (used by door-game AI loop between ticks).
+ * Empire state should reflect the end of the previous resolved slot.
+ */
+export async function getAIMoveDecision(playerId: string): Promise<{
+  action: ActionType;
+  params: Record<string, unknown>;
+  llmSource: string;
+} | null> {
+  const player = await prisma.player.findUnique({
+    where: { id: playerId },
+    include: {
+      empire: { include: { planets: true, army: true, supplyRates: true, research: true } },
+    },
+  });
+  if (!player?.empire || player.empire.turnsLeft < 1) return null;
+
+  const gameSessionId = player.gameSessionId;
+  const rivals = gameSessionId
+    ? await prisma.player.findMany({
+        where: { gameSessionId, id: { not: playerId } },
+        select: { name: true, isAI: true },
+      })
+    : [];
+
+  const ctx: AIMoveContext = {
+    commanderName: player.name,
+    rivalNames: rivals.map((r) => r.name),
+  };
+
+  const recentEvents = gameSessionId
+    ? await prisma.gameEvent.findMany({
+        where: { gameSessionId },
+        orderBy: { createdAt: "desc" },
+        take: 16,
+      })
+    : [];
+
+  const eventStrings = recentEvents
+    .reverse()
+    .map((ev) => `[${ev.type}] ${ev.message}`);
+
+  const e = player.empire;
+  const move = await getAIMove(
+    player.aiPersona ?? AI_PERSONAS.economist,
+    {
+      credits: e.credits,
+      food: e.food,
+      ore: e.ore,
+      fuel: e.fuel,
+      population: e.population,
+      taxRate: e.taxRate,
+      civilStatus: e.civilStatus,
+      turnsPlayed: e.turnsPlayed,
+      turnsLeft: e.turnsLeft,
+      netWorth: e.netWorth,
+      isProtected: e.isProtected,
+      protectionTurns: e.protectionTurns,
+      foodSellRate: e.foodSellRate,
+      oreSellRate: e.oreSellRate,
+      petroleumSellRate: e.petroleumSellRate,
+      planets: e.planets.map((p) => ({
+        type: p.type,
+        shortTermProduction: p.shortTermProduction,
+      })),
+      army: e.army ? {
+        soldiers: e.army.soldiers,
+        generals: e.army.generals,
+        fighters: e.army.fighters,
+        defenseStations: e.army.defenseStations,
+        lightCruisers: e.army.lightCruisers,
+        heavyCruisers: e.army.heavyCruisers,
+        carriers: e.army.carriers,
+        covertAgents: e.army.covertAgents,
+        commandShipStrength: e.army.commandShipStrength,
+        effectiveness: e.army.effectiveness,
+        covertPoints: e.army.covertPoints,
+      } : undefined,
+      research: e.research ? {
+        accumulatedPoints: e.research.accumulatedPoints,
+        unlockedTechIds: e.research.unlockedTechIds,
+      } : undefined,
+    },
+    eventStrings,
+    ctx,
+  );
+
+  return {
+    action: move.action as ActionType,
+    params: paramsFromAIMove(move),
+    llmSource: move.llmSource,
+  };
+}
+
 /**
  * Run a single AI player's turn: get their decision and execute it.
  */
@@ -95,19 +206,7 @@ async function runOneAI(playerId: string, playerName: string, persona: string | 
 
     const llmSource = move.llmSource;
 
-    const params: Record<string, unknown> = {};
-    if (move.target) params.target = move.target;
-    if (move.amount) params.amount = move.amount;
-    if (move.type) params.type = move.type;
-    if (move.rate !== undefined) params.rate = move.rate;
-    if (move.techId) params.techId = move.techId;
-    if (move.opType !== undefined) params.opType = move.opType;
-    if (move.resource) params.resource = move.resource;
-    if (move.foodSellRate !== undefined) params.foodSellRate = move.foodSellRate;
-    if (move.oreSellRate !== undefined) params.oreSellRate = move.oreSellRate;
-    if (move.petroleumSellRate !== undefined) params.petroleumSellRate = move.petroleumSellRate;
-    if (move.name) params.name = move.name;
-    if (move.treatyType) params.treatyType = move.treatyType;
+    const params = paramsFromAIMove(move);
 
     const { finalResult, skipped, invalidMessage } = await processAiMoveOrSkip(
       playerId,

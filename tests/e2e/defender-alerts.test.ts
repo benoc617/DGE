@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import {
   register,
   joinGame,
@@ -7,6 +7,7 @@ import {
   uniqueName,
   uniqueGalaxy,
   clearNewEmpireProtectionForPlayers,
+  deleteTestGalaxySession,
 } from "./helpers";
 
 /**
@@ -17,11 +18,17 @@ describe("E2E: defender situation-report alerts", () => {
   const p1 = uniqueName("AlertP1");
   const p2 = uniqueName("AlertP2");
   const password = "testpass";
+  let sessionId: string;
 
   beforeAll(async () => {
     const { data } = await register(p1, password, { galaxyName: galaxy, isPublic: false });
+    sessionId = data.gameSessionId as string;
     await joinGame(p2, password, { inviteCode: data.inviteCode as string });
     await clearNewEmpireProtectionForPlayers([p1, p2]);
+  });
+
+  afterAll(async () => {
+    await deleteTestGalaxySession(sessionId);
   });
 
   it("defender receives ALERT in turnReport.events after guerrilla strike", async () => {

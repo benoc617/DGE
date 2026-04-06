@@ -26,9 +26,13 @@ docker compose up --build
 - **App:** [http://localhost:3000](http://localhost:3000) — Operators: [http://localhost:3000/admin](http://localhost:3000/admin) · [http://localhost:3000/admin/users](http://localhost:3000/admin/users) (accounts)
 - **Postgres on the host:** `localhost:5433` (user `postgres`, password `postgres`, database `srx`) — use this in `DATABASE_URL` if you run **Prisma CLI on the host** (`migrate dev`, `studio`) against the same database.
 - On startup the **app** container runs `prisma migrate deploy` (apply committed migrations). For new migrations from the host, run `npx prisma migrate dev` with `DATABASE_URL` pointing at port **5433**, or `docker compose exec app npx prisma migrate dev` (interactive).
-- To seed **SystemSettings** from your `.env` into the DB (for `/admin` overrides): `DATABASE_URL="postgresql://postgres:postgres@localhost:5433/srx" npm run seed:system-settings`
+- To seed **SystemSettings** from your `.env` into the DB (for `/admin` overrides): **`docker compose exec app npm run seed:system-settings`** (recommended; matches the app container). Alternative on the host: `DATABASE_URL="postgresql://postgres:postgres@localhost:5433/srx" npm run seed:system-settings`
 
 Stop: `docker compose down` · Logs: `npm run docker:logs`
+
+**Rebuild, deploy, and restart dev** (e.g. after schema/git changes — runs `docker compose up --build -d`, `prisma generate` in the app container, then `docker compose restart app`): `npm run docker:dev:redeploy`
+
+If the app returns **500** (including on login) and logs mention **`lightningcss.*.node`** or **`globals.css`**, stale **`node_modules`** and/or **`.next`** (Turbopack) volumes are often the cause. Reset both and rebuild: **`npm run docker:reset-node-modules`**.
 
 ### Option B — Node on the host
 
@@ -58,11 +62,12 @@ Open [http://localhost:3000](http://localhost:3000) to play. Operators can open 
 |----------|-------------|
 | [HOWTOPLAY.md](HOWTOPLAY.md) | Player-facing game guide — strategies, controls, how everything works |
 | [GAME-SPEC.md](GAME-SPEC.md) | Complete technical specification — every formula, constant, and data model. Enough to rebuild the game from scratch. |
-| [CLAUDE.md](CLAUDE.md) | AI assistant guidance — commands, architecture, conventions |
+| [CLAUDE.md](CLAUDE.md) | AI assistant guidance — commands, architecture, conventions (includes **container-only** npm for agents) |
+| [AGENTS.md](AGENTS.md) | Cursor / editor agent rules — Docker-only tooling notice |
 
 ## What Is This Game?
 
-You manage an interstellar empire across **100 turns**. Each turn you take one action — buy planets, recruit military, attack rivals, conduct espionage, trade on the market, research technology, or adjust your economy — then your empire ticks forward: resources are produced and consumed, population grows or shrinks, maintenance is paid, and random events may occur. The player with the highest **net worth** at the end wins.
+You manage an interstellar empire across **100 turns**. Each turn you take one action — buy planets, recruit military, attack rivals, conduct espionage, trade on the market, research technology, or adjust your economy — then your empire ticks forward: resources are produced and consumed, population grows or shrinks, maintenance is paid, and random events may occur. The player with the highest **net worth** at the end wins. **Optional simultaneous-turn** galaxies use **door-game** rounds: up to **five full turns per calendar day** (tick → one action per full turn, auto-closed on the server; use **Skip** to end without acting); **each** full turn consumes **one** of your **100** `turnsLeft` (not once per calendar day). Humans and AIs can all play during the round; AIs run in the background (after each new day the server kicks a full AI drain once the galaxy transaction has committed; mid-round catch-up still uses background runs), and a **round timer** skips unused full turns when it expires — each skipped slot also consumes `turnsLeft` — so the calendar advances (see `HOWTOPLAY.md`). The default remains **sequential** one-player-at-a-time turns.
 
 ### Core Systems
 
@@ -84,15 +89,28 @@ Single-page app with 3-column layout (3-5-4 grid): compact stat-box empire panel
 
 SRX includes a deterministic simulation engine for rapid balance iteration. All game randomness uses a seedable PRNG, so identical seeds produce identical games.
 
+**Agents / automation:** run simulations **inside** the `app` container (Compose up):
+
 ```bash
-npm run sim:quick       # 30 turns, 3 players, seed 42, DB reset
-npm run sim:full        # 100 turns, 5 players, per-turn logging
-npm run sim:stress      # 10 repeated runs with aggregate win-rate report
-npm run sim:csv         # Full run with CSV export
-npm run sim -- --turns 200 --players 5 --seed 42 --strategies balanced,military_rush,turtle
+docker compose exec app npm run sim:quick
+docker compose exec app npm run sim:full
+docker compose exec app npm run sim:stress
+docker compose exec app npm run sim:balance
+docker compose exec app npm run sim:csv
+docker compose exec app npm run sim:session:seq
+docker compose exec app npm run sim:session:sim
+docker compose exec app npm run sim -- --turns 200 --players 8 --seed 42 --strategies balanced,military_rush,turtle,research_rush
+docker compose exec app npm run sim -- --session sequential --turns 50 --players 3 --seed 1
+docker compose exec app npm run sim -- --session simultaneous --apd 1 --turns 50 --players 3 --seed 1
 ```
 
-5 built-in strategies: `balanced`, `economy_rush`, `military_rush`, `turtle`, `random`.
+On a host with a matching Node install and `DATABASE_URL`, the same `npm run sim:*` scripts work — prefer the container for consistency with the rest of this repo.
+
+**Orphan sim** (`sim` without `--session`): strategy bots with `gameSessionId = null` — fast, no turn-order or door-game API.
+
+**Session sim** (`--session sequential` or `simultaneous`): creates a real `GameSession`, runs the same code paths as the HTTP game (`getCurrentTurn` / `advanceTurn`, or door-game `openFullTurn` / `closeFullTurn`). The temp galaxy is deleted after the report. Use `--apd N` with simultaneous (`default 5` in live games; `1` for shorter sims).
+
+Preset strategies (default roster cycles one per simulated player): `balanced`, `economy_rush`, `military_rush`, `turtle`, `random`, `research_rush`, `credit_leverage`, `growth_focus`. Use `--players 8` to run all presets in one sim. `sim:balance` runs 25×100-turn games with aggregate win rates and balance notes.
 
 ## Tech Stack
 
@@ -122,7 +140,7 @@ src/
     ActionPanel.tsx                  # 7-tabbed action panel + turn order display
     EmpirePanel.tsx                  # Empire status with collapsible planet details
     EventLog.tsx                     # Color-coded turn report and event log
-    Leaderboard.tsx                  # Galactic Powers (Rk, Commander, Prt, Worth, …) + click-to-target
+    Leaderboard.tsx                  # Galactic Powers (Rk, Commander, Prt, Worth, Pop, Plt, Turns, Mil) + click-to-target
   lib/
     game-engine.ts                   # Core: 19-step turn tick + 30 action types; blocks attacks/covert vs protected rivals
     empire-prisma.ts                 # Prisma-safe empire partial updates (scalar lists)
@@ -147,9 +165,11 @@ tests/
   e2e/                               # HTTP API: game flow, multiplayer, lobbies, auth accounts, aux routes (log, gameover, ai), admin (+ users), …
   vitest.e2e.config.ts               # E2E config: sequential files, `tests/e2e` only
 scripts/
+  deploy-docker-dev.sh               # docker compose restart app (local bind mount; no remote)
   simulate.ts                        # CLI runner for simulations
   fix-tsc-bin.js                     # postinstall: repair broken node_modules/.bin/tsc symlink
   docker-entrypoint-dev.sh           # Compose app entry: prisma generate, migrate deploy, next dev
+  docker-reset-node-modules-volume.sh  # Drop node_modules + .next volumes, rebuild app (lightningcss / Turbopack cache)
 prisma/
   schema.prisma                      # Database schema
 Dockerfile.dev                       # Dev image: Node + deps + prisma generate
@@ -159,30 +179,36 @@ docker-compose.yml                   # Postgres + Next dev (bind mount, named vo
 
 ## Development
 
+**Automation (Cursor, Claude Code, CI-style scripts):** do **not** run `npm test`, `npm run lint`, `npm run typecheck`, `npm run build`, or other verification **on the host** — use the Compose **`app`** container (`npm run docker:*` or `docker compose exec app …`). See **`CLAUDE.md`** → **Container-only npm (mandatory for agents)** and root **`AGENTS.md`**.
+
 ```bash
-npm run dev              # Dev server on localhost:3000 (host Node; needs DATABASE_URL in .env)
-npm run docker:up        # Compose: Postgres + dev server in Docker (see Quick Start)
+npm run docker:up        # Compose: Postgres + dev server in Docker (see Quick Start) — primary workflow
 npm run docker:down      # Stop Compose stack
 npm run docker:logs      # Follow `app` container logs
-npm run build            # Production build
-npm run lint             # ESLint
-npm run typecheck        # TypeScript (uses typescript/lib/tsc.js; postinstall repairs broken npx tsc shim)
-npx prisma studio        # Database GUI (use DATABASE_URL with port 5433 if DB is from Compose)
-npx prisma migrate dev   # Create/apply migrations (host CLI → use :5433 when Compose owns Postgres)
+npm run deploy           # docker compose restart app (Compose already running; bind-mounted source)
+npm run docker:lint      # ESLint inside `app` (stack must be up)
+npm run docker:typecheck # TypeScript check inside `app`
+npm run docker:build     # Production build inside `app`
+docker compose exec app npx prisma studio   # DB GUI (inside container; same DB as the app)
+docker compose exec app npx prisma migrate dev   # Migrations inside container (recommended for agents)
 ```
+
+**Host-only** (optional; not the default for agents): `npm run dev`, `npm run build`, `npm run lint`, `npx prisma …` on the host with `DATABASE_URL` pointing at **localhost:5433** when Postgres is from Compose — can work for humans, but optional native deps (e.g. Vitest) may not match Docker.
 
 ### Testing
 
+**Always** run Vitest and E2E **inside** the Compose **`app`** container. Host `npm test` often fails (missing Rolldown/Vitest native bindings, mismatched `node_modules`).
+
 ```bash
-npm test                 # Unit tests only (default `vitest run` — fast, no DB server)
-npm run test:unit        # Same as `npm test`
-npm run test:e2e         # Starts Next.js on port 3005, runs E2E (needs PostgreSQL; see note below)
-npm run test:e2e:only    # E2E against an already-running server — set `TEST_BASE_URL` if not :3000
-npm run test:all         # Unit + `test:e2e`
-npm run test:watch       # Watch mode
-npm run test:coverage    # With coverage report
+npm run docker:test        # Unit tests (`docker compose exec app` — stack must be up)
+npm run docker:test:e2e    # E2E against dev server on :3000 in the same container
+npm run docker:test:all    # Unit then E2E in container
 ```
 
-**E2E:** `test:e2e` uses [start-server-and-test](https://github.com/bahmutov/start-server-and-test) to boot `next dev` on **127.0.0.1:3005** (with `TEST_BASE_URL` set for Vitest). Next.js only allows **one** `next dev` per project directory — **stop Docker Compose `app`** (or any other `next dev` in this repo) before running `test:e2e`, or use `test:e2e:only` with `TEST_BASE_URL=http://127.0.0.1:3000` while **`docker compose up`** is serving the app (same DB as Compose). Apply migrations so the schema matches the Prisma client.
+**Host scripts** (`npm test`, `npm run test:e2e` on :3005, etc.) are for **CI** (Linux + clean `npm ci`) or explicit local use — **not** for automation against this repo’s Docker workflow.
+
+**E2E:** Prefer **`npm run docker:test:e2e`**. The host script `test:e2e` uses [start-server-and-test](https://github.com/bahmutov/start-server-and-test) to boot `next dev` on **127.0.0.1:3005** — conflicts with Docker’s `next dev` on :3000. **`docker:test:e2e`** runs `test:e2e:only` inside `app` with `TEST_BASE_URL=http://127.0.0.1:3000`. Apply migrations so the schema matches the Prisma client.
+
+**Door-game repair (stuck “waiting for others” after a bad AI skip):** with `DATABASE_URL` set (e.g. `localhost:5433` to Compose Postgres), run `npm run repair:door-session -- --galaxy "Your Galaxy" --dry-run` to list empires where `turnOpen` is still true but the last `TurnLog` action is `end_turn`; then `--apply` to run `closeFullTurn` for each. Or `--apply --player "Commander Name"` with optional `--force` if you must close an open turn manually.
 
 All game balance values live in `src/lib/game-constants.ts` — the single source of truth referenced by game logic, UI labels, and simulation strategies. Changing a constant there automatically updates everything.

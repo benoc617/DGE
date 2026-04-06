@@ -1,4 +1,4 @@
-import { prisma } from "./prisma";
+import { getDb } from "./db-context";
 import type { Empire, Planet, Army, SupplyRates, Market, PlanetType } from "@prisma/client";
 import { toEmpireUpdateData } from "./empire-prisma";
 import * as rng from "./rng";
@@ -20,7 +20,7 @@ async function emitGameEvent(
   player: { gameSessionId: string | null | undefined },
   row: { type: string; message: string; details?: object },
 ) {
-  await prisma.gameEvent.create({
+  await getDb().gameEvent.create({
     data: {
       gameSessionId: player.gameSessionId ?? undefined,
       type: row.type,
@@ -32,7 +32,7 @@ async function emitGameEvent(
 
 /** Queue a line on the defender's next turn situation report (shown as ALERT: …). */
 async function pushDefenderAlert(defenderEmpireId: string, message: string) {
-  await prisma.empire.update({
+  await getDb().empire.update({
     where: { id: defenderEmpireId },
     data: { pendingDefenderAlerts: { push: message } },
   });
@@ -50,9 +50,34 @@ function protectionBlockMessage(turns: number): string {
 // Types
 // ---------------------------------------------------------------------------
 
+export type ProcessTurnTickOptions = {
+  /**
+   * When false, the tick still advances economy and increments turnsPlayed, but does not decrement turnsLeft
+   * (simultaneous mode: slots 1..N-1 of a calendar day). Default true (sequential play).
+   */
+  decrementTurnsLeft?: boolean;
+  /**
+   * When true: one final economy pass after `turnsLeft` hits 0 so production/maintenance reflects post–final-action
+   * state without incrementing `turnsPlayed` (not a playable turn).
+   */
+  endgameSettlement?: boolean;
+};
+
 export type ProcessActionOptions = {
   /** Merged into TurnLog.details (e.g. `llmSource` for AI turns). */
   logMeta?: Record<string, unknown>;
+  /** Passed to inline `processTurnTick` when the tick has not been pre-persisted. */
+  tickOptions?: ProcessTurnTickOptions;
+  /**
+   * Door-game (simultaneous) mode: after the action, keep `tickProcessed` true so the next action
+   * stays in the same full turn until `end_turn` + `closeFullTurn`.
+   */
+  keepTickProcessed?: boolean;
+  /**
+   * When true, `processAction` does not run `runEndgameSettlementTick` when `turnsLeft` reaches 0 — door-game
+   * calls it from `closeFullTurn` after decrementing `turnsLeft`.
+   */
+  skipEndgameSettlement?: boolean;
 };
 
 export type ActionType =
@@ -159,9 +184,9 @@ function sumShortTermProd(planets: Planet[], type: PlanetType): number {
 }
 
 async function getOrCreateMarket(): Promise<Market> {
-  let market = await prisma.market.findFirst();
+  let market = await getDb().market.findFirst();
   if (!market) {
-    market = await prisma.market.create({ data: {} });
+    market = await getDb().market.create({ data: {} });
   }
   return market;
 }
@@ -175,7 +200,10 @@ export async function processTurnTick(
   army: Army,
   planets: Planet[],
   supplyRates: SupplyRates | null,
+  opts?: ProcessTurnTickOptions,
 ): Promise<{ updatedEmpire: Partial<Empire>; updatedArmy: Partial<Army>; updatedPlanets: { id: string; shortTermProduction: number }[]; report: TurnReport }> {
+  const decTurnsLeft = opts?.decrementTurnsLeft !== false;
+  const endgameSettlement = opts?.endgameSettlement === true;
   const events: string[] = [];
   const pendingAlerts = empire.pendingDefenderAlerts ?? [];
   for (const msg of pendingAlerts) {
@@ -268,7 +296,7 @@ export async function processTurnTick(
   const tourismCivilPenalty = Math.round(tourismIncome * civilPenalty);
   tourismIncome = Math.max(0, tourismIncome - tourismCivilPenalty);
 
-  const playerCount = await prisma.empire.count();
+  const playerCount = await getDb().empire.count();
   let galacticRedist = playerCount > 0 ? Math.floor((market.coordinatorPool / playerCount) / 200) : 0;
   if (empire.turnsPlayed < 20) {
     galacticRedist = Math.floor(empire.turnsPlayed * (galacticRedist / 20));
@@ -306,7 +334,7 @@ export async function processTurnTick(
   let newFuel = empire.fuel + fuelProduced - fuelConsumed - petroSold;
 
   // Update coordinator pool
-  await prisma.market.update({
+  await getDb().market.update({
     where: { id: market.id },
     data: {
       coordinatorPool: { increment: galacticTax - galacticRedist },
@@ -628,8 +656,8 @@ export async function processTurnTick(
       population: newPopulation,
       civilStatus: newCivilStatus,
       netWorth,
-      turnsPlayed: empire.turnsPlayed + 1,
-      turnsLeft: empire.turnsLeft - 1,
+      turnsPlayed: endgameSettlement ? empire.turnsPlayed : empire.turnsPlayed + 1,
+      turnsLeft: decTurnsLeft ? empire.turnsLeft - 1 : empire.turnsLeft,
       isProtected: newIsProtected,
       protectionTurns: newProtectionTurns,
       pendingDefenderAlerts: [],
@@ -660,8 +688,11 @@ const playerInclude = {
   empire: { include: { planets: true, army: true, supplyRates: true, research: true } },
 } as const;
 
-export async function runAndPersistTick(playerId: string): Promise<TurnReport | null> {
-  const player = await prisma.player.findUnique({
+export async function runAndPersistTick(
+  playerId: string,
+  opts?: ProcessTurnTickOptions,
+): Promise<TurnReport | null> {
+  const player = await getDb().player.findUnique({
     where: { id: playerId },
     include: playerInclude,
   });
@@ -672,22 +703,139 @@ export async function runAndPersistTick(playerId: string): Promise<TurnReport | 
   if (!army || empire.turnsLeft < 1) return null;
   if (empire.tickProcessed) return null;
 
-  const tick = await processTurnTick(empire, army, empire.planets, empire.supplyRates);
+  const tick = await processTurnTick(empire, army, empire.planets, empire.supplyRates, opts);
 
-  await prisma.empire.update({
+  await getDb().empire.update({
     where: { id: empire.id },
     data: { ...toEmpireUpdateData(tick.updatedEmpire), tickProcessed: true },
   });
-  await prisma.army.update({
+  await getDb().army.update({
     where: { id: army.id },
     data: tick.updatedArmy,
   });
   for (const pu of tick.updatedPlanets) {
-    await prisma.planet.update({
+    await getDb().planet.update({
       where: { id: pu.id },
       data: { shortTermProduction: pu.shortTermProduction },
     });
   }
+
+  return tick.report;
+}
+
+/**
+ * Research RP accrual, loan payments, and bond maturity — runs after the main economy tick in `processAction`,
+ * and again after `runEndgameSettlementTick`'s settlement tick so finance stays consistent.
+ */
+async function applyPostActionEconomyFinance(
+  empireId: string,
+  tick: { updatedEmpire: Partial<Empire>; report: TurnReport },
+  planets: Planet[],
+  research: { id: string } | null,
+): Promise<void> {
+  const researchPlanetCount = planets.filter((p) => p.type === "RESEARCH").length;
+  if (researchPlanetCount > 0 && research) {
+    const rpProduced = researchPlanetCount * PLANET_CONFIG.RESEARCH.baseProduction;
+    await getDb().research.update({
+      where: { id: research.id },
+      data: { accumulatedPoints: { increment: rpProduced } },
+    });
+  }
+
+  const activeLoans = await getDb().loan.findMany({ where: { empireId } });
+  for (const loan of activeLoans) {
+    if (loan.turnsRemaining > 0) {
+      const payment = Math.floor(loan.balance / loan.turnsRemaining);
+      const interest = Math.floor((payment / 100) * loan.interestRate);
+      const totalPayment = payment + interest;
+      tick.updatedEmpire.credits = (tick.updatedEmpire.credits ?? 0) - totalPayment;
+
+      const lotteryContrib = Math.floor(totalPayment * 0.1);
+      const mkt = await getOrCreateMarket();
+      await getDb().market.update({ where: { id: mkt.id }, data: { lotteryPool: { increment: lotteryContrib } } });
+
+      const newBalance = loan.balance - payment;
+      if (newBalance <= 0 || loan.turnsRemaining <= 1) {
+        await getDb().loan.delete({ where: { id: loan.id } });
+      } else {
+        await getDb().loan.update({
+          where: { id: loan.id },
+          data: { balance: newBalance, turnsRemaining: loan.turnsRemaining - 1 },
+        });
+      }
+    }
+  }
+
+  const activeBonds = await getDb().bond.findMany({ where: { empireId } });
+  for (const bond of activeBonds) {
+    if (bond.turnsRemaining <= 1) {
+      const payout = bond.amount + Math.floor(bond.amount * bond.interestRate / 100);
+      tick.updatedEmpire.credits = (tick.updatedEmpire.credits ?? 0) + payout;
+      await getDb().bond.delete({ where: { id: bond.id } });
+      tick.report.events.push(`Bond matured: received ${payout.toLocaleString()} credits.`);
+    } else {
+      await getDb().bond.update({
+        where: { id: bond.id },
+        data: { turnsRemaining: bond.turnsRemaining - 1 },
+      });
+    }
+  }
+}
+
+/**
+ * After the final playable turn (`turnsLeft` just reached 0), run one more full economy tick from the
+ * post–final-action state so income, maintenance, and random resolution match what the next turn would have
+ * applied. Does not increment `turnsPlayed`. Door-game: invoked from `closeFullTurn`; sequential: from `processAction`.
+ */
+export async function runEndgameSettlementTick(playerId: string): Promise<TurnReport | null> {
+  const already = await getDb().turnLog.findFirst({
+    where: { playerId, action: "endgame_settlement" },
+    select: { id: true },
+  });
+  if (already) return null;
+
+  const player = await getDb().player.findUnique({
+    where: { id: playerId },
+    include: playerInclude,
+  });
+  if (!player?.empire) return null;
+  const empire = player.empire;
+  const army = empire.army;
+  if (!army) return null;
+  if (empire.turnsLeft !== 0) return null;
+
+  const tick = await processTurnTick(empire, army, empire.planets, empire.supplyRates, {
+    decrementTurnsLeft: false,
+    endgameSettlement: true,
+  });
+
+  await applyPostActionEconomyFinance(empire.id, tick, empire.planets, empire.research ?? null);
+
+  await getDb().empire.update({
+    where: { id: empire.id },
+    data: { ...toEmpireUpdateData(tick.updatedEmpire), tickProcessed: true },
+  });
+  await getDb().army.update({
+    where: { id: army.id },
+    data: tick.updatedArmy,
+  });
+  for (const pu of tick.updatedPlanets) {
+    await getDb().planet.update({
+      where: { id: pu.id },
+      data: { shortTermProduction: pu.shortTermProduction },
+    });
+  }
+
+  await getDb().turnLog.create({
+    data: {
+      playerId,
+      action: "endgame_settlement",
+      details: {
+        actionMsg: "Endgame economy settlement (applies one full tick from post–final-action state).",
+        report: tick.report,
+      } as object,
+    },
+  });
 
   return tick.report;
 }
@@ -702,7 +850,7 @@ export async function processAction(
   params?: Record<string, unknown>,
   options?: ProcessActionOptions,
 ): Promise<ActionResult> {
-  const player = await prisma.player.findUnique({
+  const player = await getDb().player.findUnique({
     where: { id: playerId },
     include: playerInclude,
   });
@@ -728,7 +876,7 @@ export async function processAction(
   let tick: { updatedEmpire: Partial<Empire>; updatedArmy: Partial<Army>; updatedPlanets: { id: string; shortTermProduction: number }[]; report: TurnReport };
 
   if (!empire.tickProcessed) {
-    tick = await processTurnTick(empire, army, planets, supplyRates);
+    tick = await processTurnTick(empire, army, planets, supplyRates, options?.tickOptions);
     tickReport = tick.report;
   } else {
     // Tick already persisted — seed with current DB values so action cases
@@ -786,7 +934,7 @@ export async function processAction(
 
       tick.updatedEmpire.credits = (tick.updatedEmpire.credits ?? 0) - cost;
 
-      await prisma.planet.create({
+      await getDb().planet.create({
         data: {
           empireId: empire.id,
           name: generatePlanetName(),
@@ -837,7 +985,7 @@ export async function processAction(
       if (total !== 100) {
         return { success: false, message: `Supply rates must sum to 100 (got ${total}).` };
       }
-      await prisma.supplyRates.update({ where: { id: supplyRates.id }, data: rates });
+      await getDb().supplyRates.update({ where: { id: supplyRates.id }, data: rates });
       actionMsg = "Supply production rates updated.";
       break;
     }
@@ -967,7 +1115,7 @@ export async function processAction(
       if (!targetName) return { success: false, message: "No target specified." };
       if ((tick.updatedArmy.generals ?? 0) < 1) return { success: false, message: "Need at least 1 general to attack." };
 
-      const targetPlayer = await prisma.player.findFirst({
+      const targetPlayer = await getDb().player.findFirst({
         where: { name: targetName, ...sessionFilter },
         include: { empire: { include: { planets: true, army: true } } },
       });
@@ -1033,7 +1181,7 @@ export async function processAction(
       for (const [k, v] of Object.entries(result.defenderLosses)) {
         if (v > 0) defUpdates[k] = Math.max(0, (defArmy as unknown as Record<string, number>)[k] - v);
       }
-      await prisma.army.update({ where: { id: defArmy.id }, data: defUpdates });
+      await getDb().army.update({ where: { id: defArmy.id }, data: defUpdates });
 
       // Effectiveness changes
       if (result.victory) {
@@ -1045,7 +1193,7 @@ export async function processAction(
           tick.updatedEmpire.credits = (tick.updatedEmpire.credits ?? 0) + result.loot.creditsLooted;
           tick.updatedEmpire.population = (tick.updatedEmpire.population ?? 0) + result.loot.populationTransferred;
 
-          await prisma.empire.update({
+          await getDb().empire.update({
             where: { id: targetPlayer.empire.id },
             data: {
               credits: { decrement: result.loot.creditsLooted },
@@ -1059,7 +1207,7 @@ export async function processAction(
           const shuffled = defPlanets.sort(() => rng.random() - 0.5);
           const toCapture = shuffled.slice(0, result.loot.planetsCaptures);
           for (const p of toCapture) {
-            await prisma.planet.update({ where: { id: p.id }, data: { empireId: empire.id } });
+            await getDb().planet.update({ where: { id: p.id }, data: { empireId: empire.id } });
           }
         }
       } else {
@@ -1103,7 +1251,7 @@ export async function processAction(
       const targetName = params?.target as string;
       if (!targetName) return { success: false, message: "No target specified." };
 
-      const targetPlayer = await prisma.player.findFirst({
+      const targetPlayer = await getDb().player.findFirst({
         where: { name: targetName, ...sessionFilter },
         include: { empire: { include: { army: true } } },
       });
@@ -1135,7 +1283,7 @@ export async function processAction(
       const result = runGuerrillaAttack(atkSnap, defSnap);
 
       tick.updatedArmy.soldiers = Math.max(0, (tick.updatedArmy.soldiers ?? army.soldiers) - (result.attackerLosses.soldiers ?? 0));
-      await prisma.army.update({
+      await getDb().army.update({
         where: { id: defArmy.id },
         data: { soldiers: Math.max(0, defArmy.soldiers - (result.damageDealt.soldiers ?? 0)) },
       });
@@ -1172,7 +1320,7 @@ export async function processAction(
         return { success: false, message: `Need ${nukeCost.toLocaleString()} credits for ${numNukes} nukes (500M each).` };
       }
 
-      const targetPlayer = await prisma.player.findFirst({
+      const targetPlayer = await getDb().player.findFirst({
         where: { name: targetName, ...sessionFilter },
         include: { empire: { include: { planets: true } } },
       });
@@ -1190,13 +1338,13 @@ export async function processAction(
       tick.updatedEmpire.credits = (tick.updatedEmpire.credits ?? 0) - nukeCost;
 
       for (const planetId of result.planetsRadiated) {
-        await prisma.planet.update({
+        await getDb().planet.update({
           where: { id: planetId },
           data: { isRadiated: true, longTermProduction: { decrement: 40 }, shortTermProduction: { decrement: 40 } },
         });
       }
 
-      await prisma.empire.update({
+      await getDb().empire.update({
         where: { id: targetPlayer.empire.id },
         data: { population: { decrement: result.populationKilled }, civilStatus: Math.min(7, targetPlayer.empire.civilStatus + 2) },
       });
@@ -1235,7 +1383,7 @@ export async function processAction(
         return { success: false, message: "Need at least 10 covert agents to deploy chemical weapons." };
       }
 
-      const targetPlayer = await prisma.player.findFirst({
+      const targetPlayer = await getDb().player.findFirst({
         where: { name: targetName, ...sessionFilter },
         include: { empire: { include: { planets: true } } },
       });
@@ -1250,13 +1398,13 @@ export async function processAction(
       );
 
       for (const planetId of result.planetsAffected) {
-        await prisma.planet.update({
+        await getDb().planet.update({
           where: { id: planetId },
           data: { isRadiated: true },
         });
       }
 
-      await prisma.empire.update({
+      await getDb().empire.update({
         where: { id: targetPlayer.empire.id },
         data: { population: { decrement: result.populationKilled } },
       });
@@ -1318,7 +1466,7 @@ export async function processAction(
       const targetName = params?.target as string;
       if (!targetName) return { success: false, message: "No target specified." };
 
-      const targetPlayer = await prisma.player.findFirst({
+      const targetPlayer = await getDb().player.findFirst({
         where: { name: targetName, ...sessionFilter },
         include: { empire: { include: { army: true } } },
       });
@@ -1330,11 +1478,11 @@ export async function processAction(
 
       const result = runPsionicBomb();
 
-      await prisma.empire.update({
+      await getDb().empire.update({
         where: { id: targetPlayer.empire.id },
         data: { civilStatus: Math.min(7, targetPlayer.empire.civilStatus + result.civilStatusIncrease) },
       });
-      await prisma.army.update({
+      await getDb().army.update({
         where: { id: targetPlayer.empire.army.id },
         data: { effectiveness: Math.max(0, targetPlayer.empire.army.effectiveness - result.effectivenessLoss) },
       });
@@ -1422,7 +1570,7 @@ export async function processAction(
       const opType = Number(params?.opType ?? 0);
       if (!targetName) return { success: false, message: "No target specified." };
 
-      const targetPlayer = await prisma.player.findFirst({
+      const targetPlayer = await getDb().player.findFirst({
         where: { name: targetName, ...sessionFilter },
         include: { empire: true },
       });
@@ -1479,14 +1627,14 @@ export async function processAction(
       const treatyType = (params?.treatyType as string) ?? "NEUTRALITY";
       if (!targetName) return { success: false, message: "No target specified." };
 
-      const targetPlayer = await prisma.player.findFirst({
+      const targetPlayer = await getDb().player.findFirst({
         where: { name: targetName, ...sessionFilter },
         include: { empire: true },
       });
       if (!targetPlayer?.empire) return { success: false, message: `Target '${targetName}' not found.` };
       if (targetPlayer.id === playerId) return { success: false, message: "Cannot propose a treaty to yourself." };
 
-      const existing = await prisma.treaty.findFirst({
+      const existing = await getDb().treaty.findFirst({
         where: {
           OR: [
             { fromEmpireId: empire.id, toEmpireId: targetPlayer.empire.id },
@@ -1497,7 +1645,7 @@ export async function processAction(
       });
       if (existing) return { success: false, message: "A treaty already exists with this empire." };
 
-      await prisma.treaty.create({
+      await getDb().treaty.create({
         data: {
           fromEmpireId: empire.id,
           toEmpireId: targetPlayer.empire.id,
@@ -1525,12 +1673,12 @@ export async function processAction(
       const treatyId = params?.treatyId as string;
       if (!treatyId) return { success: false, message: "No treaty ID specified." };
 
-      const treaty = await prisma.treaty.findUnique({ where: { id: treatyId } });
+      const treaty = await getDb().treaty.findUnique({ where: { id: treatyId } });
       if (!treaty || treaty.toEmpireId !== empire.id || treaty.status !== "PENDING") {
         return { success: false, message: "Invalid or already processed treaty." };
       }
 
-      await prisma.treaty.update({ where: { id: treatyId }, data: { status: "ACTIVE" } });
+      await getDb().treaty.update({ where: { id: treatyId }, data: { status: "ACTIVE" } });
       await pushDefenderAlert(
         treaty.fromEmpireId,
         `${player.name} accepted your ${treaty.type} treaty proposal.`,
@@ -1543,7 +1691,7 @@ export async function processAction(
       const treatyId = params?.treatyId as string;
       if (!treatyId) return { success: false, message: "No treaty ID specified." };
 
-      const treaty = await prisma.treaty.findUnique({ where: { id: treatyId } });
+      const treaty = await getDb().treaty.findUnique({ where: { id: treatyId } });
       if (!treaty || treaty.status !== "ACTIVE") {
         return { success: false, message: "Treaty not found or not active." };
       }
@@ -1551,7 +1699,7 @@ export async function processAction(
         return { success: false, message: "Not your treaty." };
       }
 
-      await prisma.treaty.update({ where: { id: treatyId }, data: { status: "BROKEN" } });
+      await getDb().treaty.update({ where: { id: treatyId }, data: { status: "BROKEN" } });
 
       if (treaty.isBinding && treaty.turnsRemaining > 0) {
         tick.updatedEmpire.civilStatus = Math.min(7, (tick.updatedEmpire.civilStatus ?? empire.civilStatus) + 1);
@@ -1575,10 +1723,10 @@ export async function processAction(
       const coalitionName = params?.name as string;
       if (!coalitionName) return { success: false, message: "Coalition name required." };
 
-      const existing = await prisma.coalition.findUnique({ where: { name: coalitionName } });
+      const existing = await getDb().coalition.findUnique({ where: { name: coalitionName } });
       if (existing) return { success: false, message: "Coalition name already taken." };
 
-      await prisma.coalition.create({
+      await getDb().coalition.create({
         data: {
           name: coalitionName,
           leaderId: empire.id,
@@ -1594,7 +1742,7 @@ export async function processAction(
       const coalitionName = params?.name as string;
       if (!coalitionName) return { success: false, message: "Coalition name required." };
 
-      const coalition = await prisma.coalition.findUnique({ where: { name: coalitionName } });
+      const coalition = await getDb().coalition.findUnique({ where: { name: coalitionName } });
       if (!coalition) return { success: false, message: "Coalition not found." };
       if (coalition.memberIds.length >= coalition.maxMembers) {
         return { success: false, message: "Coalition is full." };
@@ -1603,7 +1751,7 @@ export async function processAction(
         return { success: false, message: "Already a member." };
       }
 
-      await prisma.coalition.update({
+      await getDb().coalition.update({
         where: { id: coalition.id },
         data: { memberIds: [...coalition.memberIds, empire.id] },
       });
@@ -1616,7 +1764,7 @@ export async function processAction(
       const coalitionName = params?.name as string;
       if (!coalitionName) return { success: false, message: "Coalition name required." };
 
-      const coalition = await prisma.coalition.findUnique({ where: { name: coalitionName } });
+      const coalition = await getDb().coalition.findUnique({ where: { name: coalitionName } });
       if (!coalition) return { success: false, message: "Coalition not found." };
       if (!coalition.memberIds.includes(empire.id)) {
         return { success: false, message: "Not a member." };
@@ -1624,10 +1772,10 @@ export async function processAction(
 
       const newMembers = coalition.memberIds.filter((id) => id !== empire.id);
       if (newMembers.length === 0) {
-        await prisma.coalition.delete({ where: { id: coalition.id } });
+        await getDb().coalition.delete({ where: { id: coalition.id } });
         actionMsg = `Left and dissolved coalition "${coalitionName}".`;
       } else {
-        await prisma.coalition.update({
+        await getDb().coalition.update({
           where: { id: coalition.id },
           data: {
             memberIds: newMembers,
@@ -1674,7 +1822,7 @@ export async function processAction(
 
       // Buying raises price
       const newRatio = Math.min(ECON.MARKET_RATIO_MAX, mkt[ratioField] + qty * 0.00001);
-      await prisma.market.update({
+      await getDb().market.update({
         where: { id: mkt.id },
         data: { [supplyField]: { decrement: qty }, [ratioField]: newRatio },
       });
@@ -1711,7 +1859,7 @@ export async function processAction(
       (tick.updatedEmpire as Record<string, number>)[empireField] = available - qty;
 
       const newRatio = Math.max(ECON.MARKET_RATIO_MIN, mkt[ratioField] - qty * 0.00001);
-      await prisma.market.update({
+      await getDb().market.update({
         where: { id: mkt.id },
         data: { [supplyField]: { increment: qty }, [ratioField]: newRatio },
       });
@@ -1722,11 +1870,11 @@ export async function processAction(
 
     case "bank_loan": {
       const loanAmount = Math.max(1000, Math.min(999999, Number(params?.amount ?? 100000)));
-      const activeLoans = await prisma.loan.count({ where: { empireId: empire.id } });
+      const activeLoans = await getDb().loan.count({ where: { empireId: empire.id } });
       if (activeLoans >= 3) return { success: false, message: "Maximum 3 active loans." };
 
       const baseRate = 50 + activeLoans * 10;
-      await prisma.loan.create({
+      await getDb().loan.create({
         data: {
           empireId: empire.id,
           principal: loanAmount,
@@ -1746,7 +1894,7 @@ export async function processAction(
       const repayAmount = Number(params?.amount ?? 0);
 
       if (loanId) {
-        const loan = await prisma.loan.findUnique({ where: { id: loanId } });
+        const loan = await getDb().loan.findUnique({ where: { id: loanId } });
         if (!loan || loan.empireId !== empire.id) return { success: false, message: "Loan not found." };
 
         const payment = Math.min(repayAmount || loan.balance, tick.updatedEmpire.credits ?? 0, loan.balance);
@@ -1754,10 +1902,10 @@ export async function processAction(
 
         const newBalance = loan.balance - payment;
         if (newBalance <= 0) {
-          await prisma.loan.delete({ where: { id: loanId } });
+          await getDb().loan.delete({ where: { id: loanId } });
           actionMsg = `Loan fully repaid (${payment.toLocaleString()} credits).`;
         } else {
-          await prisma.loan.update({ where: { id: loanId }, data: { balance: newBalance } });
+          await getDb().loan.update({ where: { id: loanId }, data: { balance: newBalance } });
           actionMsg = `Repaid ${payment.toLocaleString()} credits on loan (${newBalance.toLocaleString()} remaining).`;
         }
         tick.updatedEmpire.credits = (tick.updatedEmpire.credits ?? 0) - payment;
@@ -1772,10 +1920,10 @@ export async function processAction(
       if ((tick.updatedEmpire.credits ?? 0) < bondAmount) {
         return { success: false, message: `Need ${bondAmount} credits for the bond.` };
       }
-      const activeBonds = await prisma.bond.count({ where: { empireId: empire.id } });
+      const activeBonds = await getDb().bond.count({ where: { empireId: empire.id } });
       if (activeBonds >= 5) return { success: false, message: "Maximum 5 active bonds." };
 
-      await prisma.bond.create({
+      await getDb().bond.create({
         data: {
           empireId: empire.id,
           amount: bondAmount,
@@ -1799,7 +1947,7 @@ export async function processAction(
       tick.updatedEmpire.credits = (tick.updatedEmpire.credits ?? 0) - cost;
       const jackpotContribution = Math.floor(cost * 0.25);
       const mkt = await getOrCreateMarket();
-      await prisma.market.update({
+      await getDb().market.update({
         where: { id: mkt.id },
         data: { lotteryPool: { increment: jackpotContribution } },
       });
@@ -1809,7 +1957,7 @@ export async function processAction(
       if (rng.random() < winChance) {
         const winnings = mkt.lotteryPool + jackpotContribution;
         tick.updatedEmpire.credits = (tick.updatedEmpire.credits ?? 0) + winnings;
-        await prisma.market.update({ where: { id: mkt.id }, data: { lotteryPool: 0 } });
+        await getDb().market.update({ where: { id: mkt.id }, data: { lotteryPool: 0 } });
         actionMsg = `JACKPOT! Won ${winnings.toLocaleString()} credits from the lottery!`;
         await emitGameEvent(player, {
           type: "lottery",
@@ -1845,7 +1993,7 @@ export async function processAction(
       }
 
       // Spend points and unlock tech
-      await prisma.research.update({
+      await getDb().research.update({
         where: { id: research.id },
         data: {
           accumulatedPoints: { decrement: tech.cost },
@@ -1857,7 +2005,7 @@ export async function processAction(
       const eff = tech.effect;
       if (eff.type === "unit_upgrade") {
         const levelKey = `${eff.unitType}Level` as string;
-        await prisma.army.update({
+        await getDb().army.update({
           where: { id: army.id },
           data: { [levelKey]: eff.level },
         });
@@ -1865,25 +2013,25 @@ export async function processAction(
       } else if (eff.type === "food_bonus") {
         for (const p of planets.filter((p) => p.type === "FOOD")) {
           const newLong = Math.min(200, p.longTermProduction + Math.floor(p.longTermProduction * eff.percent / 100));
-          await prisma.planet.update({ where: { id: p.id }, data: { longTermProduction: newLong } });
+          await getDb().planet.update({ where: { id: p.id }, data: { longTermProduction: newLong } });
         }
         actionMsg = `Researched ${tech.name}: +${eff.percent}% food production.`;
       } else if (eff.type === "ore_bonus") {
         for (const p of planets.filter((p) => p.type === "ORE")) {
           const newLong = Math.min(200, p.longTermProduction + Math.floor(p.longTermProduction * eff.percent / 100));
-          await prisma.planet.update({ where: { id: p.id }, data: { longTermProduction: newLong } });
+          await getDb().planet.update({ where: { id: p.id }, data: { longTermProduction: newLong } });
         }
         actionMsg = `Researched ${tech.name}: +${eff.percent}% ore production.`;
       } else if (eff.type === "petro_bonus") {
         for (const p of planets.filter((p) => p.type === "PETROLEUM")) {
           const newLong = Math.min(200, p.longTermProduction + Math.floor(p.longTermProduction * eff.percent / 100));
-          await prisma.planet.update({ where: { id: p.id }, data: { longTermProduction: newLong } });
+          await getDb().planet.update({ where: { id: p.id }, data: { longTermProduction: newLong } });
         }
         actionMsg = `Researched ${tech.name}: +${eff.percent}% petroleum production.`;
       } else if (eff.type === "tourism_bonus" && !tech.permanent) {
         for (const p of planets.filter((p) => p.type === "TOURISM")) {
           const boost = Math.floor(p.shortTermProduction * eff.percent / 100);
-          await prisma.planet.update({ where: { id: p.id }, data: { shortTermProduction: { increment: boost } } });
+          await getDb().planet.update({ where: { id: p.id }, data: { shortTermProduction: { increment: boost } } });
         }
         actionMsg = `Researched ${tech.name}: ${tech.description}`;
       } else {
@@ -1897,10 +2045,10 @@ export async function processAction(
       const body = params?.body as string;
       if (!toName || !body) return { success: false, message: "Target and body required." };
 
-      const toPlayer = await prisma.player.findFirst({ where: { name: toName, ...sessionFilter } });
+      const toPlayer = await getDb().player.findFirst({ where: { name: toName, ...sessionFilter } });
       if (!toPlayer) return { success: false, message: `Player '${toName}' not found.` };
 
-      await prisma.message.create({
+      await getDb().message.create({
         data: {
           fromPlayerId: playerId,
           toPlayerId: toPlayer.id,
@@ -1922,79 +2070,29 @@ export async function processAction(
       return { success: false, message: `Unknown action: ${action}` };
   }
 
-  // Accumulate research points from research planets
-  const researchPlanetCount = planets.filter((p) => p.type === "RESEARCH").length;
-  if (researchPlanetCount > 0 && player.empire.research) {
-    const rpProduced = researchPlanetCount * PLANET_CONFIG.RESEARCH.baseProduction;
-    await prisma.research.update({
-      where: { id: player.empire.research.id },
-      data: { accumulatedPoints: { increment: rpProduced } },
-    });
-  }
+  await applyPostActionEconomyFinance(empire.id, tick, planets, player.empire.research ?? null);
 
-  // Process loan payments during turn tick
-  const activeLoans = await prisma.loan.findMany({ where: { empireId: empire.id } });
-  for (const loan of activeLoans) {
-    if (loan.turnsRemaining > 0) {
-      const payment = Math.floor(loan.balance / loan.turnsRemaining);
-      const interest = Math.floor((payment / 100) * loan.interestRate);
-      const totalPayment = payment + interest;
-      tick.updatedEmpire.credits = (tick.updatedEmpire.credits ?? 0) - totalPayment;
-
-      // 10% of loan payments to lottery
-      const lotteryContrib = Math.floor(totalPayment * 0.1);
-      const mkt = await getOrCreateMarket();
-      await prisma.market.update({ where: { id: mkt.id }, data: { lotteryPool: { increment: lotteryContrib } } });
-
-      const newBalance = loan.balance - payment;
-      if (newBalance <= 0 || loan.turnsRemaining <= 1) {
-        await prisma.loan.delete({ where: { id: loan.id } });
-      } else {
-        await prisma.loan.update({
-          where: { id: loan.id },
-          data: { balance: newBalance, turnsRemaining: loan.turnsRemaining - 1 },
-        });
-      }
-    }
-  }
-
-  // Process bond maturity
-  const activeBonds = await prisma.bond.findMany({ where: { empireId: empire.id } });
-  for (const bond of activeBonds) {
-    if (bond.turnsRemaining <= 1) {
-      const payout = bond.amount + Math.floor(bond.amount * bond.interestRate / 100);
-      tick.updatedEmpire.credits = (tick.updatedEmpire.credits ?? 0) + payout;
-      await prisma.bond.delete({ where: { id: bond.id } });
-      tick.report.events.push(`Bond matured: received ${payout.toLocaleString()} credits.`);
-    } else {
-      await prisma.bond.update({
-        where: { id: bond.id },
-        data: { turnsRemaining: bond.turnsRemaining - 1 },
-      });
-    }
-  }
-
-  // Persist all changes + reset tickProcessed for next turn
-  await prisma.empire.update({
+  // Persist all changes + reset tickProcessed for next turn (unless door-game mid-turn)
+  await getDb().empire.update({
     where: { id: empire.id },
-    data: { ...toEmpireUpdateData(tick.updatedEmpire), tickProcessed: false },
+    data: { ...toEmpireUpdateData(tick.updatedEmpire), tickProcessed: options?.keepTickProcessed ? true : false },
   });
 
-  await prisma.army.update({
+  await getDb().army.update({
     where: { id: army.id },
     data: tick.updatedArmy,
   });
 
   // Update planet production drifts (only if tick ran inline)
   for (const pu of tick.updatedPlanets) {
-    await prisma.planet.update({
+    await getDb().planet.update({
       where: { id: pu.id },
       data: { shortTermProduction: pu.shortTermProduction },
     });
   }
 
   // Log action
-  await prisma.turnLog.create({
+  await getDb().turnLog.create({
     data: {
       playerId,
       action,
@@ -2008,6 +2106,13 @@ export async function processAction(
       } as object,
     },
   });
+
+  if (
+    (tick.updatedEmpire.turnsLeft ?? empire.turnsLeft) === 0 &&
+    !options?.skipEndgameSettlement
+  ) {
+    await runEndgameSettlementTick(playerId);
+  }
 
   return {
     success: true,

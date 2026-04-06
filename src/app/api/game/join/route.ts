@@ -126,12 +126,22 @@ export async function POST(req: NextRequest) {
     });
 
     if (isFirstHumanActivating) {
+      const simultaneous = sess.turnMode === "simultaneous";
       await tx.gameSession.update({
         where: { id: session.id },
         data: {
           waitingForHuman: false,
-          currentTurnPlayerId: p.id,
-          turnStartedAt: new Date(),
+          ...(simultaneous
+            ? {
+                currentTurnPlayerId: null,
+                turnStartedAt: new Date(),
+                roundStartedAt: new Date(),
+                dayNumber: 1,
+              }
+            : {
+                currentTurnPlayerId: p.id,
+                turnStartedAt: new Date(),
+              }),
           playerNames: { push: cred.playerName },
         },
       });

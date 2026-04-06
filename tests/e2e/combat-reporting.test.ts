@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import {
   register,
   joinGame,
@@ -7,6 +7,8 @@ import {
   uniqueName,
   uniqueGalaxy,
   clearNewEmpireProtectionForPlayers,
+  deleteTestGalaxySession,
+  scheduleTestGalaxyDeletion,
 } from "./helpers";
 
 /**
@@ -17,7 +19,8 @@ describe("E2E: combat loss reporting (API)", () => {
   it("attack_pirates includes your unit losses in message and combatResult", async () => {
     const name = uniqueName("PirateLoss");
     const password = "testpass";
-    await register(name, password, { galaxyName: uniqueGalaxy() });
+    const { data: reg } = await register(name, password, { galaxyName: uniqueGalaxy() });
+    scheduleTestGalaxyDeletion((reg as { gameSessionId?: string }).gameSessionId);
     await doTick(name);
     const { status, data } = await doAction(name, "attack_pirates");
     expect(status).toBe(200);
@@ -39,11 +42,17 @@ describe("E2E: combat loss reporting (API)", () => {
     const p1 = uniqueName("CRP1");
     const p2 = uniqueName("CRP2");
     const password = "testpass";
+    let sessionId: string;
 
     beforeAll(async () => {
       const { data } = await register(p1, password, { galaxyName: galaxy, isPublic: false });
+      sessionId = data.gameSessionId as string;
       await joinGame(p2, password, { inviteCode: data.inviteCode as string });
       await clearNewEmpireProtectionForPlayers([p1, p2]);
+    });
+
+    afterAll(async () => {
+      await deleteTestGalaxySession(sessionId);
     });
 
     it("attack_guerrilla returns attacker/defender soldier detail in message and combatResult", async () => {

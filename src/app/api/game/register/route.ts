@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { START, generatePlanetName } from "@/lib/game-constants";
+import { ACTIONS_PER_DAY, START, generatePlanetName } from "@/lib/game-constants";
 import * as rng from "@/lib/rng";
 import type { PlanetType } from "@prisma/client";
 import { randomBytes } from "crypto";
@@ -11,8 +11,31 @@ function generateInviteCode(): string {
   return randomBytes(4).toString("hex").toUpperCase();
 }
 
-export async function POST(req: NextRequest) {
-  const { name, password, galaxyName, isPublic, turnTimeoutSecs, maxPlayers } = await req.json();
+async function handleRegisterPost(req: NextRequest): Promise<Response> {
+  let body: Record<string, unknown>;
+  try {
+    body = (await req.json()) as Record<string, unknown>;
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const {
+    name,
+    password,
+    galaxyName,
+    isPublic,
+    turnTimeoutSecs,
+    maxPlayers,
+    turnMode,
+  } = body as {
+    name?: string;
+    password?: string;
+    galaxyName?: string | null;
+    isPublic?: boolean;
+    turnTimeoutSecs?: number;
+    maxPlayers?: number;
+    turnMode?: string;
+  };
 
   if (!name || typeof name !== "string") {
     return NextResponse.json({ error: "Name is required" }, { status: 400 });
@@ -44,6 +67,7 @@ export async function POST(req: NextRequest) {
   const cap = clampMaxPlayers(maxPlayers);
 
   const now = new Date();
+  const simultaneous = turnMode === "simultaneous";
   const session = await prisma.gameSession.create({
     data: {
       galaxyName: galaxyName?.trim() || null,
@@ -56,6 +80,10 @@ export async function POST(req: NextRequest) {
       turnTimeoutSecs: timeout,
       waitingForHuman: false,
       turnStartedAt: now,
+      turnMode: simultaneous ? "simultaneous" : "sequential",
+      actionsPerDay: ACTIONS_PER_DAY,
+      dayNumber: 1,
+      roundStartedAt: simultaneous ? now : null,
     },
   });
 
@@ -105,7 +133,7 @@ export async function POST(req: NextRequest) {
 
   await prisma.gameSession.update({
     where: { id: session.id },
-    data: { currentTurnPlayerId: player.id },
+    data: simultaneous ? { currentTurnPlayerId: null } : { currentTurnPlayerId: player.id },
   });
 
   const marketCount = await prisma.market.count();
@@ -113,15 +141,41 @@ export async function POST(req: NextRequest) {
     await prisma.market.create({ data: {} });
   }
 
-  return NextResponse.json(
-    {
-      ...player,
-      gameSessionId: session.id,
-      inviteCode: session.inviteCode,
-      galaxyName: session.galaxyName,
-      isPublic: session.isPublic,
-      maxPlayers: session.maxPlayers,
-    },
-    { status: 201 },
-  );
+  try {
+    return NextResponse.json(
+      {
+        ...player,
+        gameSessionId: session.id,
+        inviteCode: session.inviteCode,
+        galaxyName: session.galaxyName,
+        isPublic: session.isPublic,
+        maxPlayers: session.maxPlayers,
+      },
+      { status: 201 },
+    );
+  } catch (serializeErr) {
+    console.error("[register] JSON response serialization failed:", serializeErr);
+    return NextResponse.json(
+      { error: "Could not build registration response (server bug)." },
+      { status: 500 },
+    );
+  }
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    return await handleRegisterPost(req);
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    console.error("[register]", e);
+    return NextResponse.json(
+      {
+        error:
+          process.env.NODE_ENV === "development"
+            ? `Registration failed: ${message}`
+            : "Registration failed (server error). Check server logs and run prisma migrate deploy.",
+      },
+      { status: 500 },
+    );
+  }
 }

@@ -1,5 +1,14 @@
-import { describe, it, expect, beforeAll } from "vitest";
-import { register, joinGame, getLobbies, getSession, patchSession, uniqueName, uniqueGalaxy } from "./helpers";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import {
+  register,
+  joinGame,
+  getLobbies,
+  getSession,
+  patchSession,
+  uniqueName,
+  uniqueGalaxy,
+  deleteTestGalaxySession,
+} from "./helpers";
 
 describe("E2E: Lobby System", () => {
   describe("public galaxy", () => {
@@ -12,6 +21,10 @@ describe("E2E: Lobby System", () => {
     beforeAll(async () => {
       const { data } = await register(creatorName, password, { galaxyName: galaxy, isPublic: true });
       sessionId = data.gameSessionId;
+    });
+
+    afterAll(async () => {
+      await deleteTestGalaxySession(sessionId);
     });
 
     it("public galaxy appears in lobby list", async () => {
@@ -49,6 +62,10 @@ describe("E2E: Lobby System", () => {
       inviteCode = data.inviteCode;
     });
 
+    afterAll(async () => {
+      await deleteTestGalaxySession(sessionId);
+    });
+
     it("private galaxy does NOT appear in lobby list", async () => {
       const { data } = await getLobbies();
       const found = data.find((l: { galaxyName: string }) => l.galaxyName === galaxy);
@@ -78,6 +95,10 @@ describe("E2E: Lobby System", () => {
       sessionId = data.gameSessionId;
     });
 
+    afterAll(async () => {
+      await deleteTestGalaxySession(sessionId);
+    });
+
     it("creator can make galaxy private", async () => {
       const { status, data } = await patchSession(sessionId, creatorName, false);
       expect(status).toBe(200);
@@ -100,10 +121,16 @@ describe("E2E: Lobby System", () => {
     const creatorName = uniqueName("CapCreator");
     const password = "testpass";
     let inviteCode: string;
+    let sessionId: string;
 
     beforeAll(async () => {
       const { data } = await register(creatorName, password, { galaxyName: galaxy });
       inviteCode = data.inviteCode;
+      sessionId = data.gameSessionId;
+    });
+
+    afterAll(async () => {
+      await deleteTestGalaxySession(sessionId);
     });
 
     it("rejects duplicate name in same galaxy", async () => {
@@ -115,9 +142,15 @@ describe("E2E: Lobby System", () => {
   describe("galaxy name uniqueness", () => {
     const galaxy = uniqueGalaxy("UniqueName");
     const password = "testpass";
+    let sessionId: string;
 
     beforeAll(async () => {
-      await register(uniqueName(), password, { galaxyName: galaxy });
+      const { data } = await register(uniqueName(), password, { galaxyName: galaxy });
+      sessionId = data.gameSessionId;
+    });
+
+    afterAll(async () => {
+      await deleteTestGalaxySession(sessionId);
     });
 
     it("rejects duplicate galaxy name", async () => {

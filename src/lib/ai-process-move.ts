@@ -15,12 +15,15 @@ export async function processAiMoveOrSkip(
   action: ActionType,
   params: Record<string, unknown>,
   logMeta: ProcessActionOptions["logMeta"],
+  extra?: Omit<ProcessActionOptions, "logMeta">,
 ): Promise<AiMoveSkipResult> {
-  const first = await processAction(playerId, action, params, { logMeta });
+  const first = await processAction(playerId, action, params, { ...extra, logMeta });
   if (first.success) {
     return { finalResult: first, skipped: false };
   }
   const second = await processAction(playerId, "end_turn", undefined, {
+    ...extra,
+    keepTickProcessed: false,
     logMeta: {
       ...logMeta,
       skippedAfterInvalid: true,

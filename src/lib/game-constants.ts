@@ -19,7 +19,7 @@ export const PLANET_CONFIG: Record<
   EDUCATION:      { label: "Education",      baseCost: 14000, baseProduction: 100, desc: "Linear immigration growth" },
   GOVERNMENT:     { label: "Government",     baseCost: 12000, baseProduction: 100, desc: "Reduces maintenance; houses agents" },
   SUPPLY:         { label: "Supply",         baseCost: 20000, baseProduction: 100, desc: "Auto-produces military units" },
-  RESEARCH:       { label: "Research",       baseCost: 40000, baseProduction: 300, desc: "Generates research points" },
+  RESEARCH:       { label: "Research",       baseCost: 25000, baseProduction: 300, desc: "Generates research points" },
   ANTI_POLLUTION: { label: "Anti-Pollution", baseCost: 18000, baseProduction: 100, desc: "Absorbs pollution from petroleum" },
 };
 
@@ -198,6 +198,9 @@ export const SESSION = {
 } as const;
 
 // --- Starting state ---
+/** Full turns (tick → actions → end_turn) per calendar round in door-game / simultaneous mode. */
+export const ACTIONS_PER_DAY = 5;
+
 export const START = {
   CREDITS: 10000,
   FOOD: 800,

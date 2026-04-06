@@ -18,11 +18,16 @@ interface SessionInfo {
 
 interface Props {
   onAction: (action: string, params?: Record<string, unknown>) => void;
+  /** Door-game: tick + end_turn when turn not open; else POST end_turn only. */
+  onSkipTurn?: () => void | Promise<void>;
   state: GameState | null;
   targetName?: string;
   onTargetChange?: (name: string) => void;
   rivalNames?: string[];
+  /** Disables economy/military/etc. actions (not skip — use `skipDisabled`). */
   disabled?: boolean;
+  /** When set, overrides disabled for the Skip button only. */
+  skipDisabled?: boolean;
   turnProcessing?: boolean;
   currentTurnPlayer?: string | null;
   turnOrder?: { name: string; isAI: boolean }[];
@@ -68,7 +73,8 @@ function formatTimer(secs: number): string {
   return `${Math.round(secs / 86400)} days`;
 }
 
-export default function ActionPanel({ onAction, state, targetName, onTargetChange, rivalNames = [], disabled, turnProcessing, currentTurnPlayer, turnOrder, sessionInfo, onSessionUpdate, onTurnTimerUpdate }: Props) {
+export default function ActionPanel({ onAction, onSkipTurn, state, targetName, onTargetChange, rivalNames = [], disabled, skipDisabled: skipDisabledProp, turnProcessing, currentTurnPlayer, turnOrder, sessionInfo, onSessionUpdate, onTurnTimerUpdate }: Props) {
+  const skipDisabled = skipDisabledProp ?? disabled;
   const [tab, setTab] = useState<Tab>("economy");
   const [amount, setAmount] = useState("10");
   const [marketResource, setMarketResource] = useState("food");
@@ -212,14 +218,16 @@ export default function ActionPanel({ onAction, state, targetName, onTargetChang
         return;
       }
 
-      if (disabled) return;
-
       // End turn: Enter when not in input, or Alt+Enter from anywhere
       if ((!inInput && e.key === "Enter") || (e.altKey && e.key === "Enter")) {
+        if (skipDisabled) return;
         e.preventDefault();
-        doAction("end_turn");
+        if (onSkipTurn) void onSkipTurn();
+        else doAction("end_turn");
         return;
       }
+
+      if (disabled) return;
 
       if (inInput) return;
       if (e.ctrlKey || e.metaKey) return;
@@ -239,7 +247,7 @@ export default function ActionPanel({ onAction, state, targetName, onTargetChang
 
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [tab, disabled, doAction, fireEconomy, fireMilitary, fireWarfare, fireEspionage, fireMarket, fireResearch, fireSettings]);
+  }, [tab, disabled, skipDisabled, onSkipTurn, doAction, fireEconomy, fireMilitary, fireWarfare, fireEspionage, fireMarket, fireResearch, fireSettings]);
 
   /** Native disabled + consistent grayed-out look when not your turn (or processing). */
   const actBtn = "disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:text-green-800";
@@ -265,13 +273,18 @@ export default function ActionPanel({ onAction, state, targetName, onTargetChang
       {/* Waiting banner */}
       {disabled && !turnProcessing && currentTurnPlayer && (
         <div className="w-full border border-cyan-800 bg-cyan-900/10 py-2 px-3 text-sm text-cyan-400 mb-3 tracking-wider shrink-0 text-center animate-pulse">
-          ◈ WAITING — {currentTurnPlayer.toUpperCase()}&apos;S TURN
+          ◈{" "}
+          {currentTurnPlayer === "others"
+            ? "WAITING — OTHER COMMANDERS"
+            : currentTurnPlayer === "resolving"
+              ? "RESOLVING MOVES"
+              : `WAITING — ${currentTurnPlayer.toUpperCase()}'S TURN`}
         </div>
       )}
       <button
         type="button"
-        onClick={() => doAction("end_turn")}
-        disabled={disabled}
+        onClick={() => (onSkipTurn ? void onSkipTurn() : doAction("end_turn"))}
+        disabled={skipDisabled}
         className={`w-full border border-yellow-600 py-2 text-sm hover:bg-yellow-900/30 text-yellow-400 mb-3 tracking-wider shrink-0 ${actBtn}`}
       >
         <Kbd k="Enter" /> SKIP TURN — Collect Income Only

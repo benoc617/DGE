@@ -17,6 +17,8 @@ import {
   adminListUsers,
   adminSetUserPassword,
   adminDeleteUser,
+  deleteTestGalaxySession,
+  scheduleTestUserDeletion,
 } from "./helpers";
 
 describe("E2E: Admin API", () => {
@@ -78,6 +80,7 @@ describe("E2E: Admin API", () => {
       }),
     });
     expect(signup.status).toBe(201);
+    scheduleTestUserDeletion(u);
 
     const { cookie } = await adminLogin();
     expect(cookie).toBeTruthy();
@@ -129,6 +132,8 @@ describe("E2E: Admin API", () => {
     const { status: joinSt, data: joinData } = await joinGame(joiner, "testpass", { inviteCode: body.inviteCode });
     expect(joinSt).toBe(201);
     expect(joinData.gameSessionId).toBe(body.sessionId);
+
+    await deleteTestGalaxySession(body.sessionId);
   });
 
   it("deletes galaxies by id (bulk API)", async () => {

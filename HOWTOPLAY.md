@@ -62,6 +62,10 @@ This is a strict turn-based game. Players act one at a time in a fixed order (se
 
 Each turn has a **timer** shown in the header (the creator picks the limit when creating the galaxy — e.g. 24 hours — and can change it in CFG). If a player doesn't act within the time limit, their turn is automatically skipped (income still collected). The timer turns red when under 1 hour.
 
+### Door-game / simultaneous turns (optional)
+
+If the galaxy creator enables **simultaneous turns** when creating the galaxy, play uses **calendar rounds** (days) in **door-game** style — like classic BBS play: you dial in, run your economy tick, then take **one action per full turn** (buy, attack, etc.); the server **ends** that full turn for you so it counts toward your five — you only need **Skip** when you want to burn a full turn **without** another action (or to open the tick first). Each round you get up to **five full turns** (header: `D3 · 2/5 full turns`). One **full turn** = **tick** (situation report) + **one** action (or **Skip** / `end_turn` alone). **You do not wait for AI** — everyone can play; the server runs **AI empires in the background** while you play, and **when a new calendar day begins** it starts a **batch drain** of every AI’s full turns for that day (after your action’s database commit finishes) so the log is not scattered across the whole day. Commits are immediate (rare **galaxy busy — retry** if two requests collide). Your game **turns left** drops **once per full turn** (each tick + action or Skip / `end_turn` that closes a slot — up to five per calendar round). When the **round timer** expires (same setting as sequential games, often 24h), any **remaining** full-turn slots you did not use that day are **skipped** and each skipped slot **also** consumes one **turns left**, same as if you had played them. The header shows a **countdown** to that deadline. **Skip** either opens your tick and then ends the full turn, or just ends if a turn is already open.
+
 ### Your turn: situation report first
 
 When it becomes your turn, the game runs the **economy tick** for your empire and shows a **situation report** — income, expenses, population change, resources, and events. Serious problems (starvation, fuel deficit, civil disorder, protection ending, etc.) are highlighted in red so you can react before you choose your action. Dismiss the report, then use the Command Center as usual.
@@ -102,7 +106,7 @@ The header bar at the top of the game screen always shows:
 
 ## The Galactic Powers Panel
 
-At the top of the game screen, the **Galactic Powers** leaderboard shows all players ranked by net worth with column headers: **Rank, Commander, Prt** (on wider screens), **Worth, Pop, Planets, Military**. **Prt** shows `[PN]` when that commander still has **new-empire protection** (same idea as your own `[P20]` badge in the header). You cannot **attack** or run **covert ops** against a protected rival until their protection turns expire.
+At the top of the game screen, the **Galactic Powers** leaderboard shows all players ranked by net worth with column headers: **Rank, Commander, Prt** (on wider screens), **Worth, Pop, Planets, Turns, Military**. **Turns** counts economy ticks completed (`turnsPlayed`) for that empire. **Prt** shows `[PN]` when that commander still has **new-empire protection** (same idea as your own `[P20]` badge in the header). You cannot **attack** or run **covert ops** against a protected rival until their protection turns expire.
 
 You can see each rival's key stats at a glance. **Click any rival's name** to auto-select them as a target in the WAR and OPS tabs — the target dropdown updates instantly.
 
@@ -146,7 +150,7 @@ The left panel shows your empire status in a **compact grid layout**: Net Worth 
   - **Education** — Brings +400 immigrants per planet per turn.
   - **Government** — Reduces maintenance costs. Required for generals (50 cap/planet) and covert agents (300 cap/planet).
   - **Supply** — Auto-produces military units each turn based on your allocation.
-  - **Research** — Generates research points (300/turn) and light cruisers.
+  - **Research** — Base cost 25,000 cr (before inflation). Generates research points (300/turn) and light cruisers.
   - **Anti-Pollution** — Absorbs pollution from petroleum planets.
 - **Set Tax Rate** — Higher taxes = more income but less population growth. 20–35% is safe for growth; 40–60% for income; above 60% and people flee.
 - **Set Sell Rates** — Percentage of produced food/ore/petroleum auto-sold each turn.
