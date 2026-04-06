@@ -1,9 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { START, generatePlanetName } from "@/lib/game-constants";
-import * as rng from "@/lib/rng";
-import type { PlanetType } from "@prisma/client";
 import { resolvePlayerCredentials } from "@/lib/player-auth";
+import { createStarterPlanets, createStarterEmpire } from "@/lib/player-init";
 
 export async function POST(req: NextRequest) {
   const { name, password, inviteCode, sessionId } = await req.json();
@@ -56,15 +54,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Name already taken in this galaxy" }, { status: 409 });
   }
 
-  const planetCreateData = START.PLANETS.flatMap((spec) =>
-    Array.from({ length: spec.count }, () => ({
-      name: generatePlanetName(),
-      sector: rng.randomInt(1, 100),
-      type: spec.type as PlanetType,
-      longTermProduction: 100,
-      shortTermProduction: 100,
-    })),
-  );
+  const planetCreateData = createStarterPlanets();
 
   const player = await prisma.$transaction(async (tx) => {
     const humansBefore = await tx.player.count({
@@ -97,28 +87,7 @@ export async function POST(req: NextRequest) {
         userId: cred.userId,
         turnOrder,
         gameSessionId: session.id,
-        empire: {
-          create: {
-            credits: START.CREDITS,
-            food: START.FOOD,
-            ore: START.ORE,
-            fuel: START.FUEL,
-            population: START.POPULATION,
-            taxRate: START.TAX_RATE,
-            turnsLeft: START.TURNS,
-            protectionTurns: START.PROTECTION_TURNS,
-            planets: { create: planetCreateData },
-            army: {
-              create: {
-                soldiers: START.SOLDIERS,
-                generals: START.GENERALS,
-                fighters: START.FIGHTERS,
-              },
-            },
-            supplyRates: { create: {} },
-            research: { create: {} },
-          },
-        },
+        empire: { create: createStarterEmpire(planetCreateData) },
       },
       include: {
         empire: { include: { planets: true, army: true, supplyRates: true } },

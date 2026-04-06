@@ -38,8 +38,8 @@ export default function Leaderboard({ currentPlayer, refreshKey, onSelectTarget,
         setRivals(list);
         onRivalsLoaded?.(list.filter((r) => r.name !== currentPlayer).map((r) => r.name));
       }
-    } catch {
-      // silently ignore
+    } catch (err) {
+      console.warn("[leaderboard] fetch failed:", err);
     }
   }, [currentPlayer, onRivalsLoaded]);
 

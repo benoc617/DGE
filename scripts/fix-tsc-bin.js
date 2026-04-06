@@ -36,6 +36,7 @@ try {
     /* ignore */
   }
   fs.symlinkSync(path.relative(path.dirname(binPath), targetPath), binPath);
-} catch {
+} catch (e) {
+  console.warn("[fix-tsc-bin] failed:", e.message);
   process.exit(0);
 }

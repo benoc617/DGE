@@ -4,6 +4,10 @@ import { processAction, runAndPersistTick, type ActionType } from "@/lib/game-en
 import { processAiMoveOrSkip } from "@/lib/ai-process-move";
 import { getCurrentTurn, advanceTurn } from "@/lib/turn-order";
 
+const PLAYER_WITH_EMPIRE = {
+  empire: { include: { planets: true, army: true, supplyRates: true, research: true } },
+} as const;
+
 function paramsFromAIMove(move: Awaited<ReturnType<typeof getAIMove>>): Record<string, unknown> {
   const params: Record<string, unknown> = {};
   if (move.target) params.target = move.target;
@@ -21,27 +25,19 @@ function paramsFromAIMove(move: Awaited<ReturnType<typeof getAIMove>>): Record<s
   return params;
 }
 
-/**
- * Pick an AI move without running a tick or persisting (used by door-game AI loop between ticks).
- * Empire state should reflect the end of the previous resolved slot.
- */
-export async function getAIMoveDecision(playerId: string): Promise<{
-  action: ActionType;
-  params: Record<string, unknown>;
-  llmSource: string;
-} | null> {
-  const player = await prisma.player.findUnique({
-    where: { id: playerId },
-    include: {
-      empire: { include: { planets: true, army: true, supplyRates: true, research: true } },
-    },
-  });
-  if (!player?.empire || player.empire.turnsLeft < 1) return null;
-
+/** Build the empire state snapshot and context needed by getAIMove. */
+async function buildAIMoveContext(player: {
+  name: string;
+  gameSessionId: string | null;
+  empire: NonNullable<Awaited<ReturnType<typeof prisma.player.findUnique<{ include: typeof PLAYER_WITH_EMPIRE }>>>>;
+  id: string;
+}) {
+  const empire = player.empire;
   const gameSessionId = player.gameSessionId;
+
   const rivals = gameSessionId
     ? await prisma.player.findMany({
-        where: { gameSessionId, id: { not: playerId } },
+        where: { gameSessionId, id: { not: player.id } },
         select: { name: true, isAI: true },
       })
     : [];
@@ -63,47 +59,69 @@ export async function getAIMoveDecision(playerId: string): Promise<{
     .reverse()
     .map((ev) => `[${ev.type}] ${ev.message}`);
 
-  const e = player.empire;
+  const empireState = {
+    credits: empire.credits,
+    food: empire.food,
+    ore: empire.ore,
+    fuel: empire.fuel,
+    population: empire.population,
+    taxRate: empire.taxRate,
+    civilStatus: empire.civilStatus,
+    turnsPlayed: empire.turnsPlayed,
+    turnsLeft: empire.turnsLeft,
+    netWorth: empire.netWorth,
+    isProtected: empire.isProtected,
+    protectionTurns: empire.protectionTurns,
+    foodSellRate: empire.foodSellRate,
+    oreSellRate: empire.oreSellRate,
+    petroleumSellRate: empire.petroleumSellRate,
+    planets: empire.planets.map((p: { type: string; shortTermProduction: number }) => ({
+      type: p.type,
+      shortTermProduction: p.shortTermProduction,
+    })),
+    army: empire.army ? {
+      soldiers: empire.army.soldiers,
+      generals: empire.army.generals,
+      fighters: empire.army.fighters,
+      defenseStations: empire.army.defenseStations,
+      lightCruisers: empire.army.lightCruisers,
+      heavyCruisers: empire.army.heavyCruisers,
+      carriers: empire.army.carriers,
+      covertAgents: empire.army.covertAgents,
+      commandShipStrength: empire.army.commandShipStrength,
+      effectiveness: empire.army.effectiveness,
+      covertPoints: empire.army.covertPoints,
+    } : undefined,
+    research: empire.research ? {
+      accumulatedPoints: empire.research.accumulatedPoints,
+      unlockedTechIds: empire.research.unlockedTechIds,
+    } : undefined,
+  };
+
+  return { ctx, eventStrings, empireState };
+}
+
+/**
+ * Pick an AI move without running a tick or persisting (used by door-game AI loop between ticks).
+ * Empire state should reflect the end of the previous resolved slot.
+ */
+export async function getAIMoveDecision(playerId: string): Promise<{
+  action: ActionType;
+  params: Record<string, unknown>;
+  llmSource: string;
+} | null> {
+  const player = await prisma.player.findUnique({
+    where: { id: playerId },
+    include: PLAYER_WITH_EMPIRE,
+  });
+  if (!player?.empire || player.empire.turnsLeft < 1) return null;
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { ctx, eventStrings, empireState } = await buildAIMoveContext(player as any);
+
   const move = await getAIMove(
     player.aiPersona ?? AI_PERSONAS.economist,
-    {
-      credits: e.credits,
-      food: e.food,
-      ore: e.ore,
-      fuel: e.fuel,
-      population: e.population,
-      taxRate: e.taxRate,
-      civilStatus: e.civilStatus,
-      turnsPlayed: e.turnsPlayed,
-      turnsLeft: e.turnsLeft,
-      netWorth: e.netWorth,
-      isProtected: e.isProtected,
-      protectionTurns: e.protectionTurns,
-      foodSellRate: e.foodSellRate,
-      oreSellRate: e.oreSellRate,
-      petroleumSellRate: e.petroleumSellRate,
-      planets: e.planets.map((p) => ({
-        type: p.type,
-        shortTermProduction: p.shortTermProduction,
-      })),
-      army: e.army ? {
-        soldiers: e.army.soldiers,
-        generals: e.army.generals,
-        fighters: e.army.fighters,
-        defenseStations: e.army.defenseStations,
-        lightCruisers: e.army.lightCruisers,
-        heavyCruisers: e.army.heavyCruisers,
-        carriers: e.army.carriers,
-        covertAgents: e.army.covertAgents,
-        commandShipStrength: e.army.commandShipStrength,
-        effectiveness: e.army.effectiveness,
-        covertPoints: e.army.covertPoints,
-      } : undefined,
-      research: e.research ? {
-        accumulatedPoints: e.research.accumulatedPoints,
-        unlockedTechIds: e.research.unlockedTechIds,
-      } : undefined,
-    },
+    empireState,
     eventStrings,
     ctx,
   );
@@ -119,14 +137,11 @@ export async function getAIMoveDecision(playerId: string): Promise<{
  * Run a single AI player's turn: get their decision and execute it.
  */
 async function runOneAI(playerId: string, playerName: string, persona: string | null) {
-  // Phase 1: run tick so AI sees post-tick state
   await runAndPersistTick(playerId);
 
   const player = await prisma.player.findUnique({
     where: { id: playerId },
-    include: {
-      empire: { include: { planets: true, army: true, supplyRates: true, research: true } },
-    },
+    include: PLAYER_WITH_EMPIRE,
   });
 
   if (!player?.empire || player.empire.turnsLeft < 1) {
@@ -134,72 +149,14 @@ async function runOneAI(playerId: string, playerName: string, persona: string | 
   }
 
   const gameSessionId = player.gameSessionId;
-  const rivals = gameSessionId
-    ? await prisma.player.findMany({
-        where: { gameSessionId, id: { not: playerId } },
-        select: { name: true, isAI: true },
-      })
-    : [];
-
-  const ctx: AIMoveContext = {
-    commanderName: playerName,
-    rivalNames: rivals.map((r) => r.name),
-  };
-
-  const recentEvents = gameSessionId
-    ? await prisma.gameEvent.findMany({
-        where: { gameSessionId },
-        orderBy: { createdAt: "desc" },
-        take: 16,
-      })
-    : [];
-
-  const eventStrings = recentEvents
-    .reverse()
-    .map((ev) => `[${ev.type}] ${ev.message}`);
 
   try {
-    const e = player.empire;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { ctx, eventStrings, empireState } = await buildAIMoveContext(player as any);
+
     const move = await getAIMove(
       persona ?? AI_PERSONAS.economist,
-      {
-        credits: e.credits,
-        food: e.food,
-        ore: e.ore,
-        fuel: e.fuel,
-        population: e.population,
-        taxRate: e.taxRate,
-        civilStatus: e.civilStatus,
-        turnsPlayed: e.turnsPlayed,
-        turnsLeft: e.turnsLeft,
-        netWorth: e.netWorth,
-        isProtected: e.isProtected,
-        protectionTurns: e.protectionTurns,
-        foodSellRate: e.foodSellRate,
-        oreSellRate: e.oreSellRate,
-        petroleumSellRate: e.petroleumSellRate,
-        planets: e.planets.map((p) => ({
-          type: p.type,
-          shortTermProduction: p.shortTermProduction,
-        })),
-        army: e.army ? {
-          soldiers: e.army.soldiers,
-          generals: e.army.generals,
-          fighters: e.army.fighters,
-          defenseStations: e.army.defenseStations,
-          lightCruisers: e.army.lightCruisers,
-          heavyCruisers: e.army.heavyCruisers,
-          carriers: e.army.carriers,
-          covertAgents: e.army.covertAgents,
-          commandShipStrength: e.army.commandShipStrength,
-          effectiveness: e.army.effectiveness,
-          covertPoints: e.army.covertPoints,
-        } : undefined,
-        research: e.research ? {
-          accumulatedPoints: e.research.accumulatedPoints,
-          unlockedTechIds: e.research.unlockedTechIds,
-        } : undefined,
-      },
+      empireState,
       eventStrings,
       ctx,
     );

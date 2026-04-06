@@ -68,6 +68,7 @@ describe("research", () => {
 
     it("unlocking a prerequisite makes dependent techs available", () => {
       const withPrereqs = TECH_TREE.find((t) => t.prerequisites.length > 0);
+      expect(withPrereqs).toBeDefined();
       if (!withPrereqs) return;
 
       // This tech shouldn't be available with nothing unlocked

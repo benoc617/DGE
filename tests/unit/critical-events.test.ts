@@ -19,7 +19,7 @@ describe("classifyTurnEvents", () => {
   });
 
   it("has at least one pattern per critical category doc", () => {
-    expect(CRITICAL_EVENT_PATTERNS.length).toBeGreaterThanOrEqual(8);
+    expect(CRITICAL_EVENT_PATTERNS.length).toBe(9);
   });
 
   it("treats defender ALERT lines as critical", () => {

@@ -46,6 +46,20 @@ const PLANET_TYPE_OPTIONS = (Object.entries(PLANET_CONFIG) as [PlanetTypeName, t
 
 type Tab = "economy" | "military" | "warfare" | "espionage" | "market" | "research" | "settings";
 
+const INPUT_CLASS = "w-full bg-black border border-green-800 text-green-300 px-2 py-1 text-sm outline-none disabled:opacity-40 disabled:cursor-not-allowed";
+const INPUT_CLASS_XS = "flex-1 bg-black border border-green-800 text-green-300 px-2 py-0.5 text-xs outline-none disabled:opacity-40 disabled:cursor-not-allowed";
+const ACT_BTN = "disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:text-green-800";
+
+/** Static color maps for warfare buttons — avoids dynamic Tailwind class generation. */
+const WAR_COLORS: Record<string, { border: string; bg: string; text: string; dim: string }> = {
+  red:    { border: "border-red-700",    bg: "hover:bg-red-900",      text: "text-red-400",    dim: "text-red-800" },
+  orange: { border: "border-orange-700", bg: "hover:bg-orange-900",   text: "text-orange-400", dim: "text-orange-800" },
+  yellow: { border: "border-yellow-700", bg: "hover:bg-yellow-900/30", text: "text-yellow-300", dim: "text-yellow-800" },
+  purple: { border: "border-purple-700", bg: "hover:bg-purple-900/30", text: "text-purple-400", dim: "text-purple-800" },
+  blue:   { border: "border-blue-700",   bg: "hover:bg-blue-900/30",   text: "text-blue-400",   dim: "text-blue-800" },
+  green:  { border: "border-green-700",  bg: "hover:bg-green-900",    text: "text-green-400",  dim: "text-green-800" },
+};
+
 function Kbd({ k }: { k: string }) {
   return (
     <kbd className="inline-block text-[9px] leading-none px-1 py-0.5 border border-green-700 bg-green-950/50 text-green-500 font-mono ml-1 align-middle rounded-sm">
@@ -249,15 +263,7 @@ export default function ActionPanel({ onAction, onSkipTurn, state, targetName, o
     return () => window.removeEventListener("keydown", handleKey);
   }, [tab, disabled, skipDisabled, onSkipTurn, doAction, fireEconomy, fireMilitary, fireWarfare, fireEspionage, fireMarket, fireResearch, fireSettings]);
 
-  /** Native disabled + consistent grayed-out look when not your turn (or processing). */
-  const actBtn = "disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:text-green-800";
-
-  const warColor = (c: string) => ({
-    border: `border-${c}-700`,
-    bg: c === "yellow" ? `hover:bg-${c}-900/30` : c === "purple" ? `hover:bg-${c}-900/30` : c === "blue" ? `hover:bg-${c}-900/30` : `hover:bg-${c}-900`,
-    text: c === "yellow" ? `text-${c}-300` : `text-${c}-400`,
-    dim: `text-${c}-800`,
-  });
+  const actBtn = ACT_BTN;
 
   return (
     <div ref={panelRef} className="border border-green-800 p-4 h-full flex flex-col">
@@ -355,7 +361,7 @@ export default function ActionPanel({ onAction, onSkipTurn, state, targetName, o
               value={amount}
               disabled={disabled}
               onChange={(e) => setAmount(e.target.value)}
-              className="w-full bg-black border border-green-800 text-green-300 px-2 py-1 text-sm outline-none disabled:opacity-40 disabled:cursor-not-allowed"
+              className={INPUT_CLASS}
               min="1"
             />
           </div>
@@ -397,7 +403,7 @@ export default function ActionPanel({ onAction, onSkipTurn, state, targetName, o
               value={target}
               disabled={disabled}
               onChange={(e) => setTarget(e.target.value)}
-              className="w-full bg-black border border-green-800 text-green-300 px-2 py-1 text-sm outline-none disabled:opacity-40 disabled:cursor-not-allowed"
+              className={INPUT_CLASS}
             >
               <option value="">— Select target —</option>
               {rivalNames.map((name) => (
@@ -417,15 +423,12 @@ export default function ActionPanel({ onAction, onSkipTurn, state, targetName, o
                   if (a.id === "attack_nuclear") params.amount = 1;
                   doAction(a.id, params);
                 }}
-                className={`border border-${a.color}-700 py-1.5 text-xs ${actBtn} ${
-                  a.color === "green" ? "hover:bg-green-900" :
-                  `hover:bg-${a.color}-900${a.color !== "red" && a.color !== "orange" ? "/30" : ""}`
-                } text-left px-2`}
+                className={`border ${WAR_COLORS[a.color].border} py-1.5 text-xs ${actBtn} ${WAR_COLORS[a.color].bg} text-left px-2`}
               >
-                <div className={a.color === "yellow" ? "text-yellow-300" : `text-${a.color}-400`}>
+                <div className={WAR_COLORS[a.color].text}>
                   <Kbd k={a.key.toUpperCase()} /> {a.label}
                 </div>
-                <div className={`text-${a.color}-800`}>{a.desc}</div>
+                <div className={WAR_COLORS[a.color].dim}>{a.desc}</div>
               </button>
             ))}
           </div>
@@ -440,7 +443,7 @@ export default function ActionPanel({ onAction, onSkipTurn, state, targetName, o
               value={target}
               disabled={disabled}
               onChange={(e) => setTarget(e.target.value)}
-              className="w-full bg-black border border-green-800 text-green-300 px-2 py-1 text-sm outline-none disabled:opacity-40 disabled:cursor-not-allowed"
+              className={INPUT_CLASS}
             >
               <option value="">— Select target —</option>
               {rivalNames.map((name) => (
@@ -478,7 +481,7 @@ export default function ActionPanel({ onAction, onSkipTurn, state, targetName, o
               value={marketResource}
               disabled={disabled}
               onChange={(e) => setMarketResource(e.target.value)}
-              className="w-full bg-black border border-green-800 text-green-300 px-2 py-1 text-sm outline-none mb-1 disabled:opacity-40 disabled:cursor-not-allowed"
+              className={`${INPUT_CLASS} mb-1`}
             >
               <option value="food">Food (base {fmt(ECON.BASE_FOOD_PRICE)} cr)</option>
               <option value="ore">Ore (base {fmt(ECON.BASE_ORE_PRICE)} cr)</option>
@@ -490,7 +493,7 @@ export default function ActionPanel({ onAction, onSkipTurn, state, targetName, o
               value={marketAmount}
               disabled={disabled}
               onChange={(e) => setMarketAmount(e.target.value)}
-              className="w-full bg-black border border-green-800 text-green-300 px-2 py-1 text-sm outline-none mb-1 disabled:opacity-40 disabled:cursor-not-allowed"
+              className={`${INPUT_CLASS} mb-1`}
               min="1"
             />
             <div className="flex gap-2">
@@ -603,7 +606,7 @@ export default function ActionPanel({ onAction, onSkipTurn, state, targetName, o
                 value={taxRate}
                 disabled={disabled}
                 onChange={(e) => setTaxRate(e.target.value)}
-                className="flex-1 bg-black border border-green-800 text-green-300 px-2 py-1 text-sm outline-none disabled:opacity-40 disabled:cursor-not-allowed"
+                className={`flex-1 ${INPUT_CLASS.replace("w-full ", "")}`}
                 min="0"
                 max="100"
               />
@@ -628,7 +631,7 @@ export default function ActionPanel({ onAction, onSkipTurn, state, targetName, o
                   value={foodSellRate}
                   disabled={disabled}
                   onChange={(e) => setFoodSellRate(e.target.value)}
-                  className="flex-1 bg-black border border-green-800 text-green-300 px-2 py-0.5 text-xs outline-none disabled:opacity-40 disabled:cursor-not-allowed"
+                  className={INPUT_CLASS_XS}
                   min="0" max="100"
                 />
               </div>
@@ -639,7 +642,7 @@ export default function ActionPanel({ onAction, onSkipTurn, state, targetName, o
                   value={oreSellRate}
                   disabled={disabled}
                   onChange={(e) => setOreSellRate(e.target.value)}
-                  className="flex-1 bg-black border border-green-800 text-green-300 px-2 py-0.5 text-xs outline-none disabled:opacity-40 disabled:cursor-not-allowed"
+                  className={INPUT_CLASS_XS}
                   min="0" max="100"
                 />
               </div>
@@ -650,7 +653,7 @@ export default function ActionPanel({ onAction, onSkipTurn, state, targetName, o
                   value={petroSellRate}
                   disabled={disabled}
                   onChange={(e) => setPetroSellRate(e.target.value)}
-                  className="flex-1 bg-black border border-green-800 text-green-300 px-2 py-0.5 text-xs outline-none disabled:opacity-40 disabled:cursor-not-allowed"
+                  className={INPUT_CLASS_XS}
                   min="0" max="100"
                 />
               </div>

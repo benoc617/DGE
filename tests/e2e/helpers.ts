@@ -195,6 +195,18 @@ export function cookieHeaderFromSetCookie(setCookie: string | null): string | un
   return setCookie.split(";")[0]?.trim() || undefined;
 }
 
+/** Shared fetch wrapper for admin API calls — handles Cookie header and JSON parsing. */
+async function adminFetch(path: string, cookie: string, options?: RequestInit) {
+  const r = await fetch(`${BASE}${path}`, {
+    headers: { "Content-Type": "application/json", Cookie: cookie, ...options?.headers },
+    ...options,
+  });
+  return {
+    status: r.status,
+    data: r.headers.get("content-type")?.includes("json") ? await r.json() : null,
+  };
+}
+
 export async function adminLogin(username = "admin", password = "srxpass") {
   const res = await fetch(`${BASE}/api/admin/login`, {
     method: "POST",
@@ -205,38 +217,36 @@ export async function adminLogin(username = "admin", password = "srxpass") {
   return { status: res.status, cookie: cookieHeaderFromSetCookie(raw) };
 }
 
+/** Run a callback with an admin cookie, logging out afterwards. */
+export async function withAdminCookie<T>(fn: (cookie: string) => Promise<T>): Promise<T> {
+  const { status, cookie } = await adminLogin();
+  if (status !== 200 || !cookie) throw new Error(`admin login failed (${status})`);
+  try {
+    return await fn(cookie);
+  } finally {
+    await adminLogout(cookie);
+  }
+}
+
 export async function adminGalaxies(cookie: string) {
-  return fetch(`${BASE}/api/admin/galaxies`, {
-    headers: { Cookie: cookie },
-  }).then(async (r) => ({
-    status: r.status,
-    data: r.headers.get("content-type")?.includes("json") ? await r.json() : null,
-  }));
+  return adminFetch("/api/admin/galaxies", cookie);
 }
 
 export async function adminCreateGalaxy(
   cookie: string,
   body: { galaxyName?: string; isPublic?: boolean; aiNames?: string[] },
 ) {
-  return fetch(`${BASE}/api/admin/galaxies`, {
+  return adminFetch("/api/admin/galaxies", cookie, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Cookie: cookie },
     body: JSON.stringify(body),
-  }).then(async (r) => ({
-    status: r.status,
-    data: r.headers.get("content-type")?.includes("json") ? await r.json() : null,
-  }));
+  });
 }
 
 export async function adminDeleteGalaxies(cookie: string, ids: string[]) {
-  return fetch(`${BASE}/api/admin/galaxies`, {
+  return adminFetch("/api/admin/galaxies", cookie, {
     method: "DELETE",
-    headers: { "Content-Type": "application/json", Cookie: cookie },
     body: JSON.stringify({ ids }),
-  }).then(async (r) => ({
-    status: r.status,
-    data: r.headers.get("content-type")?.includes("json") ? await r.json() : null,
-  }));
+  });
 }
 
 /** Remove E2E game sessions via admin API (default admin / srxpass). No-op if login fails. */
@@ -284,7 +294,7 @@ export async function deleteTestUserAccountsByUsernames(usernames: string[]): Pr
   });
   for (const { id } of accounts) {
     await prisma.player.updateMany({ where: { userId: id }, data: { userId: null } });
-    await prisma.userAccount.delete({ where: { id } }).catch(() => {});
+    await prisma.userAccount.delete({ where: { id } }).catch((e: Error) => console.warn(`[cleanup] failed to delete user ${id}:`, e.message));
   }
 }
 
@@ -309,14 +319,10 @@ export async function adminLogout(cookie: string) {
 }
 
 export async function adminChangePassword(cookie: string, currentPassword: string, newPassword: string) {
-  return fetch(`${BASE}/api/admin/password`, {
+  return adminFetch("/api/admin/password", cookie, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Cookie: cookie },
     body: JSON.stringify({ currentPassword, newPassword }),
-  }).then(async (r) => ({
-    status: r.status,
-    data: r.headers.get("content-type")?.includes("json") ? await r.json() : null,
-  }));
+  });
 }
 
 /** Clears DB-stored admin password so login uses `INITIAL_ADMIN_PASSWORD` env only. For E2E isolation. */
@@ -332,51 +338,80 @@ export async function resetSystemSettings() {
 }
 
 export async function adminGetSettings(cookie: string) {
-  return fetch(`${BASE}/api/admin/settings`, {
-    headers: { Cookie: cookie },
-  }).then(async (r) => ({
-    status: r.status,
-    data: r.headers.get("content-type")?.includes("json") ? await r.json() : null,
-  }));
+  return adminFetch("/api/admin/settings", cookie);
 }
 
 export async function adminPatchSettings(cookie: string, body: Record<string, unknown>) {
-  return fetch(`${BASE}/api/admin/settings`, {
+  return adminFetch("/api/admin/settings", cookie, {
     method: "PATCH",
-    headers: { "Content-Type": "application/json", Cookie: cookie },
     body: JSON.stringify(body),
-  }).then(async (r) => ({
-    status: r.status,
-    data: r.headers.get("content-type")?.includes("json") ? await r.json() : null,
-  }));
+  });
 }
 
 export async function adminListUsers(cookie: string) {
-  return fetch(`${BASE}/api/admin/users`, {
-    headers: { Cookie: cookie },
-  }).then(async (r) => ({
-    status: r.status,
-    data: r.headers.get("content-type")?.includes("json") ? await r.json() : null,
-  }));
+  return adminFetch("/api/admin/users", cookie);
 }
 
 export async function adminSetUserPassword(cookie: string, userId: string, newPassword: string) {
-  return fetch(`${BASE}/api/admin/users`, {
+  return adminFetch("/api/admin/users", cookie, {
     method: "PATCH",
-    headers: { "Content-Type": "application/json", Cookie: cookie },
     body: JSON.stringify({ userId, newPassword }),
-  }).then(async (r) => ({
-    status: r.status,
-    data: r.headers.get("content-type")?.includes("json") ? await r.json() : null,
-  }));
+  });
 }
 
 export async function adminDeleteUser(cookie: string, userId: string) {
-  return fetch(`${BASE}/api/admin/users?id=${encodeURIComponent(userId)}`, {
+  return adminFetch(`/api/admin/users?id=${encodeURIComponent(userId)}`, cookie, {
     method: "DELETE",
-    headers: { Cookie: cookie },
-  }).then(async (r) => ({
-    status: r.status,
-    data: r.headers.get("content-type")?.includes("json") ? await r.json() : null,
-  }));
+  });
+}
+
+// --- Multiplayer test setup helpers ---
+
+/** Register a galaxy and have a second player join. Returns player IDs and session ID. */
+export async function setupTwoPlayerGame(
+  p1Prefix = "P1",
+  p2Prefix = "P2",
+  opts?: { password?: string; turnMode?: "sequential" | "simultaneous" },
+) {
+  const galaxy = uniqueGalaxy("MPTest");
+  const p1Name = uniqueName(p1Prefix);
+  const p2Name = uniqueName(p2Prefix);
+  const pwd = opts?.password ?? "testpass";
+
+  const reg = await register(p1Name, pwd, { galaxyName: galaxy, isPublic: false, turnMode: opts?.turnMode });
+  if (reg.status !== 201) throw new Error(`register failed: ${reg.status} ${JSON.stringify(reg.data)}`);
+  const regData = reg.data as { id: string; gameSessionId: string; inviteCode: string };
+
+  const join = await joinGame(p2Name, pwd, { inviteCode: regData.inviteCode });
+  if (join.status !== 201) throw new Error(`join failed: ${join.status} ${JSON.stringify(join.data)}`);
+  const joinData = join.data as { id: string };
+
+  return {
+    p1Name,
+    p2Name,
+    p1Id: regData.id,
+    p2Id: joinData.id,
+    sessionId: regData.gameSessionId,
+    inviteCode: regData.inviteCode,
+    galaxy,
+  };
+}
+
+// --- Status response type for E2E assertions ---
+
+export interface StatusResponse {
+  isYourTurn?: boolean;
+  currentTurnPlayer?: string;
+  turnMode?: string;
+  turnOpen?: boolean;
+  fullTurnsLeftToday?: number;
+  dayNumber?: number;
+  actionsPerDay?: number;
+  canAct?: boolean;
+  roundEndsAt?: string;
+  turnDeadline?: string;
+  empire?: Record<string, unknown>;
+  turnsLeft?: number;
+  turnsPlayed?: number;
+  [key: string]: unknown;
 }

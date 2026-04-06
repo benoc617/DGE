@@ -1,9 +1,7 @@
 import { prisma } from "./prisma";
 import { AI_PERSONAS } from "./gemini";
 import { AI_CONFIGS, type AIPersonaKey } from "./ai-builtin-config";
-import { generatePlanetName, START } from "./game-constants";
-import * as rng from "./rng";
-import type { PlanetType } from "@prisma/client";
+import { createStarterPlanets, createStarterEmpire } from "./player-init";
 
 export type { AIPersonaKey };
 
@@ -37,16 +35,6 @@ export async function createAIPlayersForSession(
       continue;
     }
 
-    const planetCreateData = START.PLANETS.flatMap((spec) =>
-      Array.from({ length: spec.count }, () => ({
-        name: generatePlanetName(),
-        sector: rng.randomInt(1, 100),
-        type: spec.type as PlanetType,
-        longTermProduction: 100,
-        shortTermProduction: 100,
-      })),
-    );
-
     await prisma.player.create({
       data: {
         name: cfg.name,
@@ -54,28 +42,7 @@ export async function createAIPlayersForSession(
         aiPersona: AI_PERSONAS[cfg.persona],
         turnOrder: nextTurnOrder++,
         gameSessionId,
-        empire: {
-          create: {
-            credits: START.CREDITS,
-            food: START.FOOD,
-            ore: START.ORE,
-            fuel: START.FUEL,
-            population: START.POPULATION,
-            taxRate: START.TAX_RATE,
-            turnsLeft: START.TURNS,
-            protectionTurns: START.PROTECTION_TURNS,
-            planets: { create: planetCreateData },
-            army: {
-              create: {
-                soldiers: START.SOLDIERS,
-                generals: START.GENERALS,
-                fighters: START.FIGHTERS,
-              },
-            },
-            supplyRates: { create: {} },
-            research: { create: {} },
-          },
-        },
+        empire: { create: createStarterEmpire(createStarterPlanets()) },
       },
     });
 

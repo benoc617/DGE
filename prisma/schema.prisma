@@ -62,13 +62,13 @@ model Empire {
   playerId String @unique
   player   Player @relation(fields: [playerId], references: [id])
 
-  credits Int @default(15000)
-  food    Int @default(1000)
-  ore     Int @default(500)
-  fuel    Int @default(200)
+  credits Int @default(10000)
+  food    Int @default(800)
+  ore     Int @default(400)
+  fuel    Int @default(150)
 
-  population  Int @default(50000)
-  taxRate     Int @default(30)
+  population  Int @default(25000)
+  taxRate     Int @default(25)
   civilStatus Int @default(0)
 
   foodSellRate      Int @default(0)
