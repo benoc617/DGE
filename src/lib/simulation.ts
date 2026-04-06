@@ -1,0 +1,568 @@
+/**
+ * Simulation engine for running full games at speed without HTTP.
+ * Directly calls Prisma and game-engine functions.
+ * Collects per-turn per-player snapshots for analysis.
+ */
+
+import { prisma } from "./prisma";
+import { processAction, type ActionType, type TurnReport } from "./game-engine";
+import { generatePlanetName, START, PLANET_CONFIG } from "./game-constants";
+import * as rng from "./rng";
+import { setSeed } from "./rng";
+import type { PlanetType } from "@prisma/client";
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+export interface SimConfig {
+  /** Total turns to simulate per player */
+  turns: number;
+  /** Number of human-like players (use AI strategies) */
+  playerCount: number;
+  /** RNG seed for reproducibility (null = true random) */
+  seed: number | null;
+  /** How much to log: 0=silent, 1=summary, 2=per-turn, 3=verbose */
+  verbosity: number;
+  /** Player strategies to use */
+  strategies?: SimStrategy[];
+}
+
+export type SimStrategy =
+  | "balanced"
+  | "economy_rush"
+  | "military_rush"
+  | "turtle"
+  | "random";
+
+export interface TurnSnapshot {
+  turn: number;
+  playerName: string;
+  credits: number;
+  food: number;
+  ore: number;
+  fuel: number;
+  population: number;
+  netWorth: number;
+  totalPlanets: number;
+  soldiers: number;
+  fighters: number;
+  lightCruisers: number;
+  heavyCruisers: number;
+  civilStatus: number;
+  action: string;
+  income: number;
+  expenses: number;
+  popNet: number;
+  events: string[];
+}
+
+export interface SimResult {
+  config: SimConfig;
+  snapshots: TurnSnapshot[];
+  summary: PlayerSummary[];
+  balanceWarnings: string[];
+  elapsedMs: number;
+}
+
+export interface PlayerSummary {
+  name: string;
+  strategy: SimStrategy;
+  finalCredits: number;
+  finalPopulation: number;
+  finalNetWorth: number;
+  finalPlanets: number;
+  peakPopulation: number;
+  peakCredits: number;
+  turnsPlayed: number;
+  collapsed: boolean;
+  collapseReason?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Strategy logic — decides what action to take each turn
+// ---------------------------------------------------------------------------
+
+interface StrategyContext {
+  credits: number;
+  food: number;
+  ore: number;
+  fuel: number;
+  population: number;
+  taxRate: number;
+  civilStatus: number;
+  turnsPlayed: number;
+  planets: { type: string; count: number }[];
+  totalPlanets: number;
+  soldiers: number;
+  generals: number;
+  fighters: number;
+  defenseStations: number;
+  lightCruisers: number;
+  heavyCruisers: number;
+  carriers: number;
+  covertAgents: number;
+  effectiveness: number;
+}
+
+function countType(ctx: StrategyContext, type: string): number {
+  return ctx.planets.find((p) => p.type === type)?.count ?? 0;
+}
+
+function pickAction(strategy: SimStrategy, ctx: StrategyContext, turn: number): { action: ActionType; params: Record<string, unknown> } {
+  switch (strategy) {
+    case "economy_rush":
+      return economyStrategy(ctx, turn);
+    case "military_rush":
+      return militaryStrategy(ctx, turn);
+    case "turtle":
+      return turtleStrategy(ctx, turn);
+    case "random":
+      return randomStrategy(ctx);
+    case "balanced":
+    default:
+      return balancedStrategy(ctx, turn);
+  }
+}
+
+function balancedStrategy(ctx: StrategyContext, turn: number): { action: ActionType; params: Record<string, unknown> } {
+  // Turn 0: set up ore sell rates for income
+  if (turn === 0) return { action: "set_sell_rates", params: { foodSellRate: 0, oreSellRate: 50, petroleumSellRate: 50 } };
+
+  // Early game: build economy and pop base
+  if (turn < 20) {
+    if (countType(ctx, "URBAN") < 4 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "URBAN" } };
+    if (countType(ctx, "FOOD") < 4 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "FOOD" } };
+    if (countType(ctx, "ORE") < 4 && ctx.credits >= 10000) return { action: "buy_planet", params: { type: "ORE" } };
+    if (ctx.soldiers < 200 && ctx.credits >= 5600) return { action: "buy_soldiers", params: { amount: 20 } };
+  }
+
+  // Mid game: diversify and build army
+  if (turn >= 20 && turn < 60) {
+    if (countType(ctx, "GOVERNMENT") < 2 && ctx.credits >= 12000) return { action: "buy_planet", params: { type: "GOVERNMENT" } };
+    if (countType(ctx, "TOURISM") < 2 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "TOURISM" } };
+    if (ctx.fighters < 40 && ctx.credits >= 3800) return { action: "buy_fighters", params: { amount: 10 } };
+    if (ctx.lightCruisers < 20 && ctx.credits >= 9500) return { action: "buy_light_cruisers", params: { amount: 10 } };
+    if (ctx.soldiers < 400 && ctx.credits >= 5600) return { action: "buy_soldiers", params: { amount: 20 } };
+    if (countType(ctx, "ORE") < 5 && ctx.credits >= 10000) return { action: "buy_planet", params: { type: "ORE" } };
+    if (ctx.soldiers > 150 && ctx.fighters > 15) return { action: "attack_pirates", params: {} };
+  }
+
+  // Late game: military and raids
+  if (turn >= 60) {
+    if (ctx.soldiers > 100 && ctx.fighters > 15) return { action: "attack_pirates", params: {} };
+    if (ctx.soldiers < 800 && ctx.credits >= 14000) return { action: "buy_soldiers", params: { amount: 50 } };
+    if (ctx.fighters < 80 && ctx.credits >= 7600) return { action: "buy_fighters", params: { amount: 20 } };
+    if (ctx.lightCruisers < 40 && ctx.credits >= 9500) return { action: "buy_light_cruisers", params: { amount: 10 } };
+  }
+
+  return { action: "end_turn", params: {} };
+}
+
+function economyStrategy(ctx: StrategyContext, turn: number): { action: ActionType; params: Record<string, unknown> } {
+  if (turn === 0) return { action: "set_sell_rates", params: { foodSellRate: 0, oreSellRate: 60, petroleumSellRate: 60 } };
+
+  // Prioritize income planets, lower tax for pop growth
+  if (turn === 1 && ctx.taxRate > 20) return { action: "set_tax_rate", params: { rate: 20 } };
+  if (countType(ctx, "URBAN") < 5 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "URBAN" } };
+  if (countType(ctx, "ORE") < 5 && ctx.credits >= 10000) return { action: "buy_planet", params: { type: "ORE" } };
+  if (countType(ctx, "TOURISM") < 3 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "TOURISM" } };
+  if (countType(ctx, "FOOD") < 4 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "FOOD" } };
+  if (countType(ctx, "EDUCATION") < 2 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "EDUCATION" } };
+  if (countType(ctx, "GOVERNMENT") < 2 && ctx.credits >= 12000) return { action: "buy_planet", params: { type: "GOVERNMENT" } };
+  if (ctx.lightCruisers < 15 && ctx.credits >= 9500 && turn > 40) return { action: "buy_light_cruisers", params: { amount: 10 } };
+  if (turn > 70 && ctx.soldiers > 100) return { action: "attack_pirates", params: {} };
+  return { action: "end_turn", params: {} };
+}
+
+function militaryStrategy(ctx: StrategyContext, turn: number): { action: ActionType; params: Record<string, unknown> } {
+  if (turn === 0) return { action: "set_sell_rates", params: { foodSellRate: 0, oreSellRate: 50, petroleumSellRate: 50 } };
+  if (turn === 1) return { action: "set_tax_rate", params: { rate: 15 } };
+
+  // Economic foundation first (turns 2-12)
+  if (turn < 12) {
+    if (countType(ctx, "ORE") < 4 && ctx.credits >= 10000) return { action: "buy_planet", params: { type: "ORE" } };
+    if (countType(ctx, "FOOD") < 3 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "FOOD" } };
+    if (countType(ctx, "URBAN") < 3 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "URBAN" } };
+    if (countType(ctx, "GOVERNMENT") < 2 && ctx.credits >= 12000) return { action: "buy_planet", params: { type: "GOVERNMENT" } };
+  }
+
+  // Military buildup (continuous)
+  if (ctx.generals < 6 && ctx.credits >= 3120) return { action: "buy_generals", params: { amount: 4 } };
+  if (ctx.soldiers < 500 && ctx.credits >= 8400) return { action: "buy_soldiers", params: { amount: 30 } };
+  if (ctx.fighters < 80 && ctx.credits >= 7600) return { action: "buy_fighters", params: { amount: 20 } };
+  if (ctx.lightCruisers < 30 && ctx.credits >= 9500) return { action: "buy_light_cruisers", params: { amount: 10 } };
+  if (ctx.heavyCruisers < 10 && ctx.credits >= 19000) return { action: "buy_heavy_cruisers", params: { amount: 10 } };
+
+  // Raid pirates whenever strong enough
+  if (ctx.soldiers > 100 && ctx.fighters > 10) return { action: "attack_pirates", params: {} };
+
+  // Continue expanding military
+  if (ctx.soldiers < 2000 && ctx.credits >= 14000) return { action: "buy_soldiers", params: { amount: 50 } };
+  if (ctx.fighters < 200 && ctx.credits >= 7600) return { action: "buy_fighters", params: { amount: 20 } };
+  if (ctx.lightCruisers < 60 && ctx.credits >= 9500) return { action: "buy_light_cruisers", params: { amount: 10 } };
+  if (ctx.heavyCruisers < 20 && ctx.credits >= 19000) return { action: "buy_heavy_cruisers", params: { amount: 10 } };
+
+  return { action: "end_turn", params: {} };
+}
+
+function turtleStrategy(ctx: StrategyContext, turn: number): { action: ActionType; params: Record<string, unknown> } {
+  if (turn === 0) return { action: "set_sell_rates", params: { foodSellRate: 0, oreSellRate: 50, petroleumSellRate: 50 } };
+
+  // Lower tax for pop growth, build defense and resources
+  if (turn === 1 && ctx.taxRate > 20) return { action: "set_tax_rate", params: { rate: 20 } };
+  if (countType(ctx, "URBAN") < 4 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "URBAN" } };
+  if (countType(ctx, "ORE") < 4 && ctx.credits >= 10000) return { action: "buy_planet", params: { type: "ORE" } };
+  if (countType(ctx, "FOOD") < 4 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "FOOD" } };
+  if (ctx.defenseStations < 15 && ctx.credits >= 5200) return { action: "buy_stations", params: { amount: 10 } };
+  if (ctx.fighters < 30 && ctx.credits >= 3800) return { action: "buy_fighters", params: { amount: 10 } };
+  if (ctx.lightCruisers < 20 && ctx.credits >= 9500) return { action: "buy_light_cruisers", params: { amount: 10 } };
+  if (countType(ctx, "EDUCATION") < 2 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "EDUCATION" } };
+  if (ctx.defenseStations < 30 && ctx.credits >= 5200) return { action: "buy_stations", params: { amount: 10 } };
+  if (ctx.lightCruisers < 40 && ctx.credits >= 9500) return { action: "buy_light_cruisers", params: { amount: 10 } };
+  return { action: "end_turn", params: {} };
+}
+
+function randomStrategy(ctx: StrategyContext): { action: ActionType; params: Record<string, unknown> } {
+  const actions: { action: ActionType; params: Record<string, unknown> }[] = [
+    { action: "end_turn", params: {} },
+    { action: "end_turn", params: {} },
+    { action: "buy_soldiers", params: { amount: 10 } },
+    { action: "buy_fighters", params: { amount: 5 } },
+    { action: "buy_light_cruisers", params: { amount: 5 } },
+    { action: "buy_planet", params: { type: "ORE" } },
+    { action: "buy_planet", params: { type: "FOOD" } },
+    { action: "buy_planet", params: { type: "URBAN" } },
+    { action: "attack_pirates", params: {} },
+    { action: "set_sell_rates", params: { foodSellRate: 0, oreSellRate: 50, petroleumSellRate: 50 } },
+  ];
+  return actions[Math.floor(rng.random() * actions.length)];
+}
+
+// ---------------------------------------------------------------------------
+// Main simulation runner
+// ---------------------------------------------------------------------------
+
+export async function runSimulation(config: SimConfig): Promise<SimResult> {
+  const startTime = Date.now();
+  const snapshots: TurnSnapshot[] = [];
+  const balanceWarnings: string[] = [];
+
+  // Set seed
+  setSeed(config.seed);
+
+  // Ensure market exists
+  const marketCount = await prisma.market.count();
+  if (marketCount === 0) await prisma.market.create({ data: {} });
+
+  // Create players
+  const strategies: SimStrategy[] = config.strategies ??
+    (["balanced", "economy_rush", "military_rush", "turtle", "random"] as SimStrategy[]).slice(0, config.playerCount);
+
+  const playerIds: { id: string; playerId: string; name: string; strategy: SimStrategy }[] = [];
+
+  for (let i = 0; i < config.playerCount; i++) {
+    const strategy = strategies[i % strategies.length];
+    const name = `Sim_${strategy}_${i}`;
+
+    const existing = await prisma.player.findFirst({
+      where: { name, gameSessionId: null },
+      include: { empire: true },
+    });
+    if (existing?.empire) {
+      playerIds.push({ id: existing.empire.id, playerId: existing.id, name, strategy });
+      continue;
+    }
+    if (existing) {
+      await prisma.player.delete({ where: { id: existing.id } });
+    }
+
+    const planetCreateData = START.PLANETS.flatMap((spec) =>
+      Array.from({ length: spec.count }, () => ({
+        name: generatePlanetName(),
+        sector: rng.randomInt(1, 100),
+        type: spec.type as PlanetType,
+        longTermProduction: 100,
+        shortTermProduction: 100,
+      })),
+    );
+
+    const player = await prisma.player.create({
+      data: {
+        name,
+        empire: {
+          create: {
+            credits: START.CREDITS,
+            food: START.FOOD,
+            ore: START.ORE,
+            fuel: START.FUEL,
+            population: START.POPULATION,
+            taxRate: START.TAX_RATE,
+            turnsLeft: config.turns,
+            protectionTurns: START.PROTECTION_TURNS,
+            planets: { create: planetCreateData },
+            army: {
+              create: {
+                soldiers: START.SOLDIERS,
+                generals: START.GENERALS,
+                fighters: START.FIGHTERS,
+              },
+            },
+            supplyRates: { create: {} },
+            research: { create: {} },
+          },
+        },
+      },
+      include: { empire: true },
+    });
+
+    playerIds.push({ id: player.empire!.id, playerId: player.id, name, strategy });
+  }
+
+  if (config.verbosity >= 1) {
+    console.log(`\n=== SRX SIMULATION ===`);
+    console.log(`Players: ${config.playerCount} | Turns: ${config.turns} | Seed: ${config.seed ?? "random"}`);
+    console.log(`Strategies: ${playerIds.map((p) => `${p.name}(${p.strategy})`).join(", ")}`);
+    console.log(`========================\n`);
+  }
+
+  // Run turns
+  for (let turn = 0; turn < config.turns; turn++) {
+    for (const p of playerIds) {
+      // Fetch current state for strategy decisions
+      const empire = await prisma.empire.findUnique({
+        where: { id: p.id },
+        include: { planets: true, army: true },
+      });
+
+      if (!empire || !empire.army || empire.turnsLeft < 1) continue;
+      if (empire.population < 10) continue;
+
+      const planetCounts: { type: string; count: number }[] = [];
+      const countMap: Record<string, number> = {};
+      for (const pl of empire.planets) {
+        countMap[pl.type] = (countMap[pl.type] || 0) + 1;
+      }
+      for (const [type, count] of Object.entries(countMap)) {
+        planetCounts.push({ type, count });
+      }
+
+      const ctx: StrategyContext = {
+        credits: empire.credits,
+        food: empire.food,
+        ore: empire.ore,
+        fuel: empire.fuel,
+        population: empire.population,
+        taxRate: empire.taxRate,
+        civilStatus: empire.civilStatus,
+        turnsPlayed: empire.turnsPlayed,
+        planets: planetCounts,
+        totalPlanets: empire.planets.length,
+        soldiers: empire.army.soldiers,
+        generals: empire.army.generals,
+        fighters: empire.army.fighters,
+        defenseStations: empire.army.defenseStations,
+        lightCruisers: empire.army.lightCruisers,
+        heavyCruisers: empire.army.heavyCruisers,
+        carriers: empire.army.carriers,
+        covertAgents: empire.army.covertAgents,
+        effectiveness: empire.army.effectiveness,
+      };
+
+      const { action, params } = pickAction(p.strategy, ctx, turn);
+
+      const result = await processAction(p.playerId, action, params);
+
+      const report = result.turnReport;
+
+      const snapshot: TurnSnapshot = {
+        turn,
+        playerName: p.name,
+        credits: empire.credits + (report?.income.total ?? 0) - (report?.expenses.total ?? 0),
+        food: empire.food,
+        ore: empire.ore,
+        fuel: empire.fuel,
+        population: report?.population.newTotal ?? empire.population,
+        netWorth: report?.netWorth ?? empire.netWorth,
+        totalPlanets: empire.planets.length,
+        soldiers: empire.army.soldiers,
+        fighters: empire.army.fighters,
+        lightCruisers: empire.army.lightCruisers,
+        heavyCruisers: empire.army.heavyCruisers,
+        civilStatus: empire.civilStatus,
+        action,
+        income: report?.income.total ?? 0,
+        expenses: report?.expenses.total ?? 0,
+        popNet: report?.population.net ?? 0,
+        events: report?.events ?? [],
+      };
+
+      snapshots.push(snapshot);
+
+      if (config.verbosity >= 2) {
+        console.log(
+          `T${String(turn).padStart(3)} ${p.name.padEnd(24)} ${action.padEnd(20)} ` +
+          `Cr:${snapshot.credits.toLocaleString().padStart(10)} Pop:${snapshot.population.toLocaleString().padStart(10)} ` +
+          `NW:${snapshot.netWorth.toString().padStart(5)} Pl:${snapshot.totalPlanets} ` +
+          `I:${snapshot.income.toLocaleString().padStart(8)} E:${snapshot.expenses.toLocaleString().padStart(8)} ` +
+          `${snapshot.events.length > 0 ? "! " + snapshot.events[0] : ""}`
+        );
+      }
+    }
+
+    if (config.verbosity >= 1 && (turn + 1) % 25 === 0) {
+      console.log(`--- Turn ${turn + 1} complete ---`);
+    }
+  }
+
+  // Build summaries
+  const summary: PlayerSummary[] = [];
+
+  for (const p of playerIds) {
+    const empire = await prisma.empire.findUnique({
+      where: { id: p.id },
+      include: { planets: true, army: true },
+    });
+
+    const playerSnaps = snapshots.filter((s) => s.playerName === p.name);
+    const peakPop = Math.max(0, ...playerSnaps.map((s) => s.population));
+    const peakCr = Math.max(0, ...playerSnaps.map((s) => s.credits));
+
+    const collapsed = (empire?.population ?? 0) < 10 || (empire?.planets.length ?? 0) === 0;
+
+    summary.push({
+      name: p.name,
+      strategy: p.strategy,
+      finalCredits: empire?.credits ?? 0,
+      finalPopulation: empire?.population ?? 0,
+      finalNetWorth: empire?.netWorth ?? 0,
+      finalPlanets: empire?.planets.length ?? 0,
+      peakPopulation: peakPop,
+      peakCredits: peakCr,
+      turnsPlayed: empire?.turnsPlayed ?? 0,
+      collapsed,
+      collapseReason: collapsed
+        ? (empire?.population ?? 0) < 10
+          ? "population_extinct"
+          : "no_planets"
+        : undefined,
+    });
+  }
+
+  // Balance checks
+  for (const s of summary) {
+    if (s.collapsed && s.turnsPlayed < 20) {
+      balanceWarnings.push(`${s.name} (${s.strategy}) collapsed by turn ${s.turnsPlayed} — early game may be too punishing.`);
+    }
+    if (s.finalPopulation > 10_000_000) {
+      balanceWarnings.push(`${s.name} (${s.strategy}) has ${s.finalPopulation.toLocaleString()} pop — possible runaway growth.`);
+    }
+    if (s.finalCredits > 50_000_000) {
+      balanceWarnings.push(`${s.name} (${s.strategy}) has ${s.finalCredits.toLocaleString()} credits — economy may be too generous.`);
+    }
+    if (s.peakPopulation > 0 && s.finalPopulation < s.peakPopulation * 0.1) {
+      balanceWarnings.push(`${s.name} (${s.strategy}) lost 90%+ of peak population — death spiral detected.`);
+    }
+  }
+
+  const elapsedMs = Date.now() - startTime;
+
+  return { config, snapshots, summary, balanceWarnings, elapsedMs };
+}
+
+// ---------------------------------------------------------------------------
+// Reporting
+// ---------------------------------------------------------------------------
+
+export function printSimReport(result: SimResult): void {
+  const { summary, balanceWarnings, config, elapsedMs, snapshots } = result;
+
+  console.log(`\n${"=".repeat(80)}`);
+  console.log(`  SRX SIMULATION REPORT`);
+  console.log(`${"=".repeat(80)}`);
+  console.log(`  Turns: ${config.turns} | Players: ${config.playerCount} | Seed: ${config.seed ?? "random"}`);
+  console.log(`  Elapsed: ${(elapsedMs / 1000).toFixed(2)}s | Turns/sec: ${(config.turns * config.playerCount / (elapsedMs / 1000)).toFixed(0)}`);
+  console.log(`  Total snapshots: ${snapshots.length}\n`);
+
+  // Player summaries
+  console.log("  FINAL STANDINGS:");
+  console.log("  " + "-".repeat(76));
+  console.log(
+    "  " +
+    "Player".padEnd(26) +
+    "Strategy".padEnd(14) +
+    "NW".padStart(8) +
+    "Pop".padStart(12) +
+    "Credits".padStart(12) +
+    "Planets".padStart(8) +
+    "Status".padStart(10),
+  );
+  console.log("  " + "-".repeat(76));
+
+  const sorted = [...summary].sort((a, b) => b.finalNetWorth - a.finalNetWorth);
+  for (const s of sorted) {
+    console.log(
+      "  " +
+      s.name.padEnd(26) +
+      s.strategy.padEnd(14) +
+      s.finalNetWorth.toString().padStart(8) +
+      s.finalPopulation.toLocaleString().padStart(12) +
+      s.finalCredits.toLocaleString().padStart(12) +
+      s.finalPlanets.toString().padStart(8) +
+      (s.collapsed ? " DEAD" : " OK").padStart(10),
+    );
+  }
+
+  // Per-player trajectory (every 10 turns)
+  console.log(`\n  ECONOMY TRAJECTORY (every 10 turns):`);
+  for (const s of sorted) {
+    if (s.collapsed && s.turnsPlayed < 5) continue;
+    const playerSnaps = snapshots.filter((sn) => sn.playerName === s.name);
+    const milestones = playerSnaps.filter((sn) => sn.turn % 10 === 0 || sn.turn === config.turns - 1);
+    console.log(`\n  ${s.name} (${s.strategy}):`);
+    console.log("  " + "Turn".padStart(6) + "Credits".padStart(12) + "Pop".padStart(12) + "NW".padStart(8) + "Planets".padStart(8) + "Income".padStart(10) + "Expenses".padStart(10) + "PopNet".padStart(10));
+    for (const m of milestones) {
+      console.log(
+        "  " +
+        m.turn.toString().padStart(6) +
+        m.credits.toLocaleString().padStart(12) +
+        m.population.toLocaleString().padStart(12) +
+        m.netWorth.toString().padStart(8) +
+        m.totalPlanets.toString().padStart(8) +
+        m.income.toLocaleString().padStart(10) +
+        m.expenses.toLocaleString().padStart(10) +
+        (m.popNet >= 0 ? "+" : "") + m.popNet.toLocaleString().padStart(9),
+      );
+    }
+  }
+
+  // Balance warnings
+  if (balanceWarnings.length > 0) {
+    console.log(`\n  BALANCE WARNINGS (${balanceWarnings.length}):`);
+    for (const w of balanceWarnings) {
+      console.log(`  ⚠ ${w}`);
+    }
+  } else {
+    console.log(`\n  No balance warnings detected.`);
+  }
+
+  console.log(`\n${"=".repeat(80)}\n`);
+}
+
+// ---------------------------------------------------------------------------
+// CSV export for external analysis
+// ---------------------------------------------------------------------------
+
+export function snapshotsToCSV(snapshots: TurnSnapshot[]): string {
+  const headers = [
+    "turn", "player", "credits", "food", "ore", "fuel", "population",
+    "netWorth", "totalPlanets", "soldiers", "fighters", "lightCruisers",
+    "heavyCruisers", "civilStatus", "action", "income", "expenses", "popNet",
+  ];
+  const rows = snapshots.map((s) => [
+    s.turn, s.playerName, s.credits, s.food, s.ore, s.fuel, s.population,
+    s.netWorth, s.totalPlanets, s.soldiers, s.fighters, s.lightCruisers,
+    s.heavyCruisers, s.civilStatus, s.action, s.income, s.expenses, s.popNet,
+  ].join(","));
+  return [headers.join(","), ...rows].join("\n");
+}

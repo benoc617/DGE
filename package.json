@@ -3,27 +3,54 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "postinstall": "node scripts/fix-tsc-bin.js",
+    "typecheck": "node ./node_modules/typescript/lib/tsc.js --noEmit",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "sim": "npx tsx scripts/simulate.ts",
+    "sim:quick": "npx tsx scripts/simulate.ts --turns 30 --players 3 --seed 42 --reset",
+    "sim:full": "npx tsx scripts/simulate.ts --turns 100 --players 5 --seed 42 --reset --verbosity 2",
+    "sim:stress": "npx tsx scripts/simulate.ts --repeat 10 --turns 100 --players 5 --seed 1 --reset",
+    "sim:csv": "npx tsx scripts/simulate.ts --turns 100 --players 5 --seed 42 --reset --csv sim_output.csv",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:unit": "vitest run tests/unit",
+    "test:e2e": "PORT=3005 TEST_BASE_URL=http://127.0.0.1:3005 start-server-and-test \"npm run dev\" http://127.0.0.1:3005 \"vitest run --config vitest.e2e.config.ts tests/e2e\"",
+    "test:e2e:only": "vitest run --config vitest.e2e.config.ts tests/e2e",
+    "test:all": "npm run test:unit && npm run test:e2e",
+    "test:coverage": "vitest run --coverage",
+    "docker:up": "docker compose up --build",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f app",
+    "seed:system-settings": "npx tsx scripts/seed-system-settings.ts"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
+    "@prisma/adapter-pg": "^7.6.0",
     "@prisma/client": "^7.6.0",
+    "bcryptjs": "^3.0.3",
     "next": "16.2.2",
+    "pg": "^8.20.0",
     "prisma": "^7.6.0",
     "react": "19.2.4",
     "react-dom": "19.2.4"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@types/bcryptjs": "^2.4.6",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@vitest/coverage-v8": "^4.1.2",
+    "dotenv": "^17.4.0",
     "eslint": "^9",
     "eslint-config-next": "16.2.2",
+    "start-server-and-test": "^2.1.5",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "tsx": "^4.21.0",
+    "typescript": "^5",
+    "vitest": "^4.1.2"
   }
 }

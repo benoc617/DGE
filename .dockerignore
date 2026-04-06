@@ -1,0 +1,22 @@
+# Dependencies & build output (reinstalled / generated in container)
+node_modules
+.next
+out
+
+# Git & IDE
+.git
+.gitignore
+.cursor
+*.md
+!README.md
+
+# Env (injected via compose / env_file)
+.env
+.env.*
+
+# Tests & misc (not needed for image build; still available via bind mount at runtime)
+coverage
+*.log
+
+# OS
+.DS_Store

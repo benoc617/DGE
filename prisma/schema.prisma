@@ -4,62 +4,256 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
+}
+
+enum PlanetType {
+  FOOD
+  ORE
+  TOURISM
+  PETROLEUM
+  URBAN
+  EDUCATION
+  GOVERNMENT
+  SUPPLY
+  RESEARCH
+  ANTI_POLLUTION
+}
+
+model UserAccount {
+  id           String    @id @default(cuid())
+  username     String    @unique
+  fullName     String
+  email        String    @unique
+  passwordHash String
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  players Player[]
 }
 
 model Player {
-  id          String   @id @default(cuid())
-  name        String   @unique
-  isAI        Boolean  @default(false)
-  aiPersona   String?  // Gemini persona prompt for AI players
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id            String       @id @default(cuid())
+  name          String
+  passwordHash  String?
+  isAI          Boolean      @default(false)
+  aiPersona     String?
+  turnOrder     Int          @default(0)
+  gameSessionId String?
+  gameSession   GameSession? @relation(fields: [gameSessionId], references: [id])
+  userId        String?
+  user          UserAccount? @relation(fields: [userId], references: [id])
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
 
-  empire      Empire?
-  turns       TurnLog[]
+  empire Empire?
+  turns  TurnLog[]
+
+  @@unique([name, gameSessionId])
 }
 
 model Empire {
-  id            String   @id @default(cuid())
-  playerId      String   @unique
-  player        Player   @relation(fields: [playerId], references: [id])
+  id       String @id @default(cuid())
+  playerId String @unique
+  player   Player @relation(fields: [playerId], references: [id])
 
-  // Resources
-  credits       Int      @default(10000)
-  ore           Int      @default(500)
-  food          Int      @default(500)
-  fuel          Int      @default(500)
+  credits Int @default(15000)
+  food    Int @default(1000)
+  ore     Int @default(500)
+  fuel    Int @default(200)
 
-  // Fleet
-  fighters      Int      @default(10)
-  transports    Int      @default(2)
-  warships      Int      @default(0)
+  population  Int @default(50000)
+  taxRate     Int @default(30)
+  civilStatus Int @default(0)
 
-  // Planets
-  planets       Planet[]
+  foodSellRate      Int @default(0)
+  oreSellRate       Int @default(50)
+  petroleumSellRate Int @default(50)
 
-  // Turn management
-  turnsLeft     Int      @default(100)
-  turnReset     DateTime @default(now())
+  netWorth    Int @default(0)
+  turnsPlayed Int @default(0)
+  turnsLeft   Int @default(100)
 
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  isProtected     Boolean @default(true)
+  protectionTurns Int     @default(20)
+  tickProcessed   Boolean @default(false)
+
+  /** Queued messages shown on the defender's next turn situation report (ALERT lines). */
+  pendingDefenderAlerts String[] @default([])
+
+  planets     Planet[]
+  army        Army?
+  supplyRates SupplyRates?
+  research    Research?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model Planet {
-  id            String   @id @default(cuid())
-  empireId      String
-  empire        Empire   @relation(fields: [empireId], references: [id])
+  id       String @id @default(cuid())
+  empireId String
+  empire   Empire @relation(fields: [empireId], references: [id], onDelete: Cascade)
 
-  name          String
-  sector        Int
-  population    Int      @default(1000)
-  ore           Int      @default(100)
-  food          Int      @default(100)
-  defenses      Int      @default(0)
+  name                String
+  sector              Int
+  type                PlanetType
+  population          Int     @default(0)
+  longTermProduction  Int     @default(100)
+  shortTermProduction Int     @default(100)
+  defenses            Int     @default(0)
+  isRadiated          Boolean @default(false)
 
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Army {
+  id       String @id @default(cuid())
+  empireId String @unique
+  empire   Empire @relation(fields: [empireId], references: [id], onDelete: Cascade)
+
+  soldiers        Int @default(0)
+  generals        Int @default(0)
+  fighters        Int @default(0)
+  defenseStations Int @default(0)
+  lightCruisers   Int @default(0)
+  heavyCruisers   Int @default(0)
+  carriers        Int @default(0)
+  covertAgents    Int @default(0)
+
+  soldiersLevel      Int @default(0)
+  fightersLevel      Int @default(0)
+  stationsLevel      Int @default(0)
+  lightCruisersLevel Int @default(0)
+  heavyCruisersLevel Int @default(0)
+
+  commandShipStrength Int @default(0)
+  effectiveness       Int @default(100)
+  covertPoints        Int @default(0)
+}
+
+model SupplyRates {
+  id       String @id @default(cuid())
+  empireId String @unique
+  empire   Empire @relation(fields: [empireId], references: [id], onDelete: Cascade)
+
+  rateSoldier      Int @default(40)
+  rateFighter      Int @default(20)
+  rateStation      Int @default(10)
+  rateHeavyCruiser Int @default(0)
+  rateCarrier      Int @default(0)
+  rateGeneral      Int @default(10)
+  rateCovert       Int @default(10)
+  rateCredits      Int @default(10)
+}
+
+model Market {
+  id          String @id @default(cuid())
+  foodSupply  Int    @default(500000)
+  foodRatio   Float  @default(1.0)
+  oreSupply   Int    @default(500000)
+  oreRatio    Float  @default(1.0)
+  petroSupply Int    @default(500000)
+  petroRatio  Float  @default(1.0)
+
+  coordinatorPool Int @default(0)
+  lotteryPool     Int @default(0)
+}
+
+enum TreatyType {
+  NEUTRALITY
+  FREE_TRADE
+  MINOR_ALLIANCE
+  TOTAL_DEFENSE
+  ARMED_DEFENSE_PACT
+  CRUISER_PROTECTION
+}
+
+enum TreatyStatus {
+  PENDING
+  ACTIVE
+  EXPIRED
+  BROKEN
+}
+
+model Treaty {
+  id             String       @id @default(cuid())
+  fromEmpireId   String
+  toEmpireId     String
+  type           TreatyType
+  status         TreatyStatus @default(PENDING)
+  turnsRemaining Int          @default(20)
+  isBinding      Boolean      @default(true)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+}
+
+model Coalition {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  leaderId  String
+  memberIds String[] @default([])
+  maxMembers Int     @default(5)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum ConvoyType {
+  TRADE
+  MILITARY
+  COLONIZATION
+}
+
+model Convoy {
+  id             String     @id @default(cuid())
+  fromEmpireId   String
+  toEmpireId     String?
+  type           ConvoyType
+  contents       Json       @default("{}")
+  turnsRemaining Int        @default(5)
+  sectorFrom     Int
+  sectorTo       Int
+  createdAt      DateTime   @default(now())
+}
+
+model Message {
+  id           String   @id @default(cuid())
+  fromPlayerId String
+  toPlayerId   String
+  subject      String
+  body         String
+  isRead       Boolean  @default(false)
+  createdAt    DateTime @default(now())
+}
+
+model Research {
+  id                String   @id @default(cuid())
+  empireId          String   @unique
+  empire            Empire   @relation(fields: [empireId], references: [id], onDelete: Cascade)
+  accumulatedPoints Int      @default(0)
+  unlockedTechIds   String[] @default([])
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
+model Loan {
+  id             String   @id @default(cuid())
+  empireId       String
+  principal      Int
+  balance        Int
+  interestRate   Int      @default(50)
+  turnsRemaining Int      @default(20)
+  createdAt      DateTime @default(now())
+}
+
+model Bond {
+  id             String   @id @default(cuid())
+  empireId       String
+  amount         Int
+  interestRate   Int      @default(10)
+  turnsRemaining Int      @default(30)
+  createdAt      DateTime @default(now())
 }
 
 model TurnLog {
@@ -72,9 +266,67 @@ model TurnLog {
 }
 
 model GameEvent {
-  id        String   @id @default(cuid())
-  type      String   // "combat", "trade", "exploration", etc.
-  message   String
-  details   Json?
-  createdAt DateTime @default(now())
+  id            String        @id @default(cuid())
+  gameSessionId String?
+  gameSession   GameSession?  @relation(fields: [gameSessionId], references: [id])
+  type          String
+  message       String
+  details       Json?
+  createdAt     DateTime      @default(now())
+}
+
+model HighScore {
+  id         String   @id @default(cuid())
+  playerName String
+  netWorth   Int
+  population Int
+  planets    Int
+  turnsPlayed Int
+  rank       Int
+  totalPlayers Int
+  finishedAt DateTime @default(now())
+}
+
+/** Singleton row `id = "admin"`. When present, admin login uses bcrypt `passwordHash`; otherwise `INITIAL_ADMIN_PASSWORD` env (default srxpass). Username always `ADMIN_USERNAME` env. */
+model AdminSettings {
+  id           String   @id
+  passwordHash String
+  updatedAt    DateTime @updatedAt
+}
+
+/** Singleton row `id = "default"`. Optional Gemini overrides; `DATABASE_URL` stays in environment only. */
+model SystemSettings {
+  id           String   @id @default("default")
+  geminiApiKey String?
+  geminiModel  String?  @default("gemini-2.5-flash")
+  updatedAt    DateTime @updatedAt
+}
+
+model GameSession {
+  id               String   @id @default(cuid())
+  galaxyName       String?  @unique
+  createdBy        String?
+  isPublic         Boolean  @default(true)
+  inviteCode       String?  @unique
+  maxPlayers       Int      @default(50)
+  currentTurnIndex    Int      @default(0)
+  currentTurnPlayerId String?
+  /** Null when lobby has not started (no human yet); timer not running. */
+  turnStartedAt       DateTime?
+  turnTimeoutSecs     Int      @default(86400)
+  /** Admin-staged galaxy: no turn timer / no actions until first human joins. */
+  waitingForHuman     Boolean  @default(false)
+
+  playerNames  String[]
+  totalTurns   Int      @default(100)
+  status       String   @default("active")
+  winnerId     String?
+  winnerName   String?
+  finalScores  Json?
+  log          Json[]   @default([])
+  startedAt    DateTime @default(now())
+  finishedAt   DateTime?
+
+  players    Player[]
+  gameEvents GameEvent[]
 }

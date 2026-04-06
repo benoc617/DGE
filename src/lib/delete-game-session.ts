@@ -1,0 +1,91 @@
+import { prisma } from "./prisma";
+
+/**
+ * Permanently remove a game session and all players/empires in it (turn logs, messages,
+ * loans/bonds, treaties, convoys, coalition membership). Safe for empty admin-staged lobbies.
+ */
+export async function deleteGameSession(sessionId: string): Promise<boolean> {
+  const session = await prisma.gameSession.findUnique({
+    where: { id: sessionId },
+    include: { players: { select: { id: true } } },
+  });
+  if (!session) return false;
+
+  const playerIds = session.players.map((p) => p.id);
+
+  const empires =
+    playerIds.length > 0
+      ? await prisma.empire.findMany({
+          where: { playerId: { in: playerIds } },
+          select: { id: true },
+        })
+      : [];
+  const empireIds = empires.map((e) => e.id);
+
+  await prisma.$transaction(async (tx) => {
+    await tx.gameEvent.deleteMany({ where: { gameSessionId: sessionId } });
+
+    if (playerIds.length === 0) {
+      await tx.gameSession.delete({ where: { id: sessionId } });
+      return;
+    }
+
+    await tx.turnLog.deleteMany({ where: { playerId: { in: playerIds } } });
+    await tx.message.deleteMany({
+      where: {
+        OR: [
+          { fromPlayerId: { in: playerIds } },
+          { toPlayerId: { in: playerIds } },
+        ],
+      },
+    });
+
+    if (empireIds.length > 0) {
+      await tx.loan.deleteMany({ where: { empireId: { in: empireIds } } });
+      await tx.bond.deleteMany({ where: { empireId: { in: empireIds } } });
+      await tx.treaty.deleteMany({
+        where: {
+          OR: [
+            { fromEmpireId: { in: empireIds } },
+            { toEmpireId: { in: empireIds } },
+          ],
+        },
+      });
+      await tx.convoy.deleteMany({
+        where: {
+          OR: [
+            { fromEmpireId: { in: empireIds } },
+            { toEmpireId: { in: empireIds } },
+          ],
+        },
+      });
+
+      const coalitions = await tx.coalition.findMany();
+      for (const c of coalitions) {
+        const touches =
+          empireIds.includes(c.leaderId) || c.memberIds.some((id) => empireIds.includes(id));
+        if (!touches) continue;
+
+        const newMembers = c.memberIds.filter((id) => !empireIds.includes(id));
+        if (newMembers.length === 0) {
+          await tx.coalition.delete({ where: { id: c.id } });
+          continue;
+        }
+        let leaderId = c.leaderId;
+        if (empireIds.includes(leaderId)) leaderId = newMembers[0]!;
+        await tx.coalition.update({
+          where: { id: c.id },
+          data: { leaderId, memberIds: newMembers },
+        });
+      }
+    }
+
+    for (const pid of playerIds) {
+      await tx.empire.delete({ where: { playerId: pid } });
+    }
+    await tx.player.deleteMany({ where: { gameSessionId: sessionId } });
+    await tx.gameSession.delete({ where: { id: sessionId } });
+  });
+
+  return true;
+}

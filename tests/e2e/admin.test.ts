@@ -1,0 +1,151 @@
+import { describe, it, expect, beforeEach } from "vitest";
+import {
+  adminLogin,
+  adminGalaxies,
+  adminCreateGalaxy,
+  adminDeleteGalaxies,
+  adminLogout,
+  adminChangePassword,
+  resetAdminPasswordOverride,
+  resetSystemSettings,
+  adminGetSettings,
+  adminPatchSettings,
+  joinGame,
+  uniqueName,
+  uniqueGalaxy,
+  api,
+  adminListUsers,
+  adminSetUserPassword,
+  adminDeleteUser,
+} from "./helpers";
+
+describe("E2E: Admin API", () => {
+  beforeEach(async () => {
+    await resetAdminPasswordOverride();
+    await resetSystemSettings();
+  });
+
+  it("changes admin password via API; clearing DB restores env password login", async () => {
+    const defaultPass = "srxpass";
+    const tempPass = "E2EAdminPw9!";
+    const { status: s0, cookie } = await adminLogin(undefined, defaultPass);
+    expect(s0).toBe(200);
+    expect(cookie).toBeTruthy();
+
+    const ch1 = await adminChangePassword(cookie!, defaultPass, tempPass);
+    expect(ch1.status).toBe(200);
+
+    await adminLogout(cookie!);
+
+    const login2 = await adminLogin(undefined, tempPass);
+    expect(login2.status).toBe(200);
+    expect(login2.cookie).toBeTruthy();
+
+    await resetAdminPasswordOverride();
+
+    const login3 = await adminLogin(undefined, defaultPass);
+    expect(login3.status).toBe(200);
+  });
+
+  it("reads and updates integration settings", async () => {
+    const { cookie } = await adminLogin();
+    expect(cookie).toBeTruthy();
+
+    const get = await adminGetSettings(cookie!);
+    expect(get.status).toBe(200);
+    const g = get.data as { geminiModel: string };
+    expect(typeof g.geminiModel).toBe("string");
+
+    const patch = await adminPatchSettings(cookie!, { geminiModel: "gemini-2.5-flash" });
+    expect(patch.status).toBe(200);
+  });
+
+  it("rejects invalid admin login", async () => {
+    const { status } = await adminLogin("admin", "wrong-password");
+    expect(status).toBe(401);
+  });
+
+  it("lists user accounts and can force password + delete", async () => {
+    const u = uniqueName("admusr");
+    const signup = await api("/api/auth/signup", {
+      method: "POST",
+      body: JSON.stringify({
+        username: u,
+        fullName: "Admin Test User",
+        email: `${u}@e2e.invalid`,
+        password: "originalpw99",
+        passwordConfirm: "originalpw99",
+      }),
+    });
+    expect(signup.status).toBe(201);
+
+    const { cookie } = await adminLogin();
+    expect(cookie).toBeTruthy();
+
+    const list = await adminListUsers(cookie!);
+    expect(list.status).toBe(200);
+    const users = (list.data as { users: { id: string; username: string }[] }).users;
+    const row = users.find((x) => x.username === u.toLowerCase());
+    expect(row).toBeTruthy();
+
+    const patch = await adminSetUserPassword(cookie!, row!.id, "newforcedpw88");
+    expect(patch.status).toBe(200);
+
+    const loginNew = await api("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ username: u, password: "newforcedpw88" }),
+    });
+    expect(loginNew.status).toBe(200);
+
+    const del = await adminDeleteUser(cookie!, row!.id);
+    expect(del.status).toBe(200);
+
+    const list2 = await adminListUsers(cookie!);
+    const users2 = (list2.data as { users: { id: string }[] }).users;
+    expect(users2.some((x) => x.id === row!.id)).toBe(false);
+  });
+
+  it("lists galaxies and creates a pre-staged lobby; first human join activates", async () => {
+    const { status: loginStatus, cookie } = await adminLogin();
+    expect(loginStatus).toBe(200);
+    expect(cookie).toBeTruthy();
+
+    const list = await adminGalaxies(cookie!);
+    expect(list.status).toBe(200);
+    expect(Array.isArray((list.data as { galaxies: unknown[] }).galaxies)).toBe(true);
+
+    const g = uniqueGalaxy("AdminStaging");
+    const created = await adminCreateGalaxy(cookie!, {
+      galaxyName: g,
+      isPublic: true,
+      aiNames: ["Admiral Koss"],
+    });
+    expect(created.status).toBe(201);
+    const body = created.data as { sessionId: string; inviteCode: string };
+    expect(body.sessionId).toBeTruthy();
+    expect(body.inviteCode).toBeTruthy();
+
+    const joiner = uniqueName("StagingJoin");
+    const { status: joinSt, data: joinData } = await joinGame(joiner, "testpass", { inviteCode: body.inviteCode });
+    expect(joinSt).toBe(201);
+    expect(joinData.gameSessionId).toBe(body.sessionId);
+  });
+
+  it("deletes galaxies by id (bulk API)", async () => {
+    const { cookie } = await adminLogin();
+    expect(cookie).toBeTruthy();
+
+    const g = uniqueGalaxy("AdminDelete");
+    const created = await adminCreateGalaxy(cookie!, { galaxyName: g, isPublic: false });
+    expect(created.status).toBe(201);
+    const sessionId = (created.data as { sessionId: string }).sessionId;
+
+    const del = await adminDeleteGalaxies(cookie!, [sessionId]);
+    expect(del.status).toBe(200);
+    expect((del.data as { deleted: number }).deleted).toBe(1);
+
+    const list = await adminGalaxies(cookie!);
+    const galaxies = (list.data as { galaxies: { id: string }[] }).galaxies;
+    expect(galaxies.some((x) => x.id === sessionId)).toBe(false);
+  });
+});
