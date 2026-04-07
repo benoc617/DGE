@@ -11,7 +11,7 @@ function getRequestHost(req: NextRequest): string {
 const CSRF_HEADER = "x-srx-csrf";
 const MUTATING_METHODS = new Set(["POST", "PATCH", "PUT", "DELETE"]);
 
-export function middleware(req: NextRequest) {
+export function proxy(req: NextRequest) {
   const host = getRequestHost(req);
   const { pathname } = req.nextUrl;
   const isApi = pathname.startsWith("/api/");
