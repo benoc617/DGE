@@ -11,8 +11,8 @@ if [ "$(id -u)" = "0" ]; then
   echo "[srx] fixing volume ownership for node user…"
   chown -R node:node /app/node_modules /app/.next 2>/dev/null || true
 
-  # Re-exec this script as the non-root `node` user (uid 1000)
-  exec gosu node "$0" "$@"
+  # Re-exec this script as the non-root `node` user (uid 1000) via setpriv (C binary, no Go stdlib)
+  exec setpriv --reuid=node --regid=node --clear-groups -- "$0" "$@"
 fi
 
 # --- Non-root phase (running as `node`) ---
