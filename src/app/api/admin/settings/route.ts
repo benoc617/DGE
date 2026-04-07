@@ -6,7 +6,7 @@ import { maskGeminiApiKeyPreview } from "@/lib/system-settings";
 const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
 
 export async function GET(req: NextRequest) {
-  const denied = requireAdmin(req);
+  const denied = await requireAdmin(req);
   if (denied) return denied;
 
   const row = await prisma.systemSettings.findUnique({ where: { id: "default" } });
@@ -20,7 +20,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function PATCH(req: NextRequest) {
-  const denied = requireAdmin(req);
+  const denied = await requireAdmin(req);
   if (denied) return denied;
 
   const body = await req.json().catch(() => ({}));

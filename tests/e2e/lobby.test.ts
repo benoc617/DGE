@@ -8,6 +8,7 @@ import {
   uniqueName,
   uniqueGalaxy,
   deleteTestGalaxySession,
+  TEST_PASSWORD,
 } from "./helpers";
 
 describe("E2E: Lobby System", () => {
@@ -15,7 +16,7 @@ describe("E2E: Lobby System", () => {
     const galaxy = uniqueGalaxy("PubLobby");
     const creatorName = uniqueName("Creator");
     const joinerName = uniqueName("Joiner");
-    const password = "testpass";
+    const password = TEST_PASSWORD;
     let sessionId: string;
 
     beforeAll(async () => {
@@ -52,7 +53,7 @@ describe("E2E: Lobby System", () => {
     const galaxy = uniqueGalaxy("PrivLobby");
     const creatorName = uniqueName("PrivCreator");
     const joinerName = uniqueName("PrivJoiner");
-    const password = "testpass";
+    const password = TEST_PASSWORD;
     let sessionId: string;
     let inviteCode: string;
 
@@ -87,7 +88,7 @@ describe("E2E: Lobby System", () => {
     const galaxy = uniqueGalaxy("ToggleLobby");
     const creatorName = uniqueName("ToggleCreator");
     const otherName = uniqueName("ToggleOther");
-    const password = "testpass";
+    const password = TEST_PASSWORD;
     let sessionId: string;
 
     beforeAll(async () => {
@@ -119,7 +120,7 @@ describe("E2E: Lobby System", () => {
   describe("capacity", () => {
     const galaxy = uniqueGalaxy("CapLobby");
     const creatorName = uniqueName("CapCreator");
-    const password = "testpass";
+    const password = TEST_PASSWORD;
     let inviteCode: string;
     let sessionId: string;
 
@@ -141,7 +142,7 @@ describe("E2E: Lobby System", () => {
 
   describe("galaxy name uniqueness", () => {
     const galaxy = uniqueGalaxy("UniqueName");
-    const password = "testpass";
+    const password = TEST_PASSWORD;
     let sessionId: string;
 
     beforeAll(async () => {

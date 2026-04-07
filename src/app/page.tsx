@@ -8,6 +8,8 @@ import EventLog from "@/components/EventLog";
 import Leaderboard from "@/components/Leaderboard";
 import { classifyTurnEvents } from "@/lib/critical-events";
 import { AUTH, SESSION } from "@/lib/game-constants";
+import { validatePasswordStrength } from "@/lib/auth";
+import { apiFetch } from "@/lib/client-fetch";
 
 interface HubGame {
   playerId: string;
@@ -286,7 +288,7 @@ export default function Home() {
   }, []);
 
   const triggerGameOver = useCallback(async (name: string) => {
-    const res = await fetch("/api/game/gameover", {
+    const res = await apiFetch("/api/game/gameover", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ playerName: name }),
@@ -346,8 +348,9 @@ export default function Home() {
       setError("Sign in required.");
       return;
     }
-    if (!loginPassword || loginPassword.length < AUTH.PASSWORD_MIN_SIGNUP) {
-      setError(`Please log in again (account password must be at least ${AUTH.PASSWORD_MIN_SIGNUP} characters).`);
+    const _pwErr = !loginPassword ? "Password required" : validatePasswordStrength(loginPassword);
+    if (_pwErr) {
+      setError(_pwErr);
       return;
     }
     setLoading(true);
@@ -355,7 +358,7 @@ export default function Home() {
       SESSION.MAX_PLAYERS_CAP,
       Math.max(SESSION.MIN_PLAYERS, Number.parseInt(inputMaxPlayers, 10) || SESSION.MAX_PLAYERS_DEFAULT),
     );
-    const res = await fetch("/api/game/register", {
+    const res = await apiFetch("/api/game/register", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -399,7 +402,7 @@ export default function Home() {
     const sessionId = data.gameSessionId as string | undefined;
     if (sessionId && selectedAI.size > 0) {
       addEvent("Setting up AI opponents...");
-      const resAi = await fetch("/api/ai/setup", {
+      const resAi = await apiFetch("/api/ai/setup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -427,7 +430,7 @@ export default function Home() {
   }
 
   async function fetchLobbies() {
-    const res = await fetch("/api/game/lobbies");
+    const res = await apiFetch("/api/game/lobbies");
     if (res.ok) {
       setLobbies(await res.json());
     }
@@ -439,8 +442,9 @@ export default function Home() {
       setError("Sign in required.");
       return;
     }
-    if (!loginPassword || loginPassword.length < AUTH.PASSWORD_MIN_SIGNUP) {
-      setError(`Please log in again (account password must be at least ${AUTH.PASSWORD_MIN_SIGNUP} characters).`);
+    const _pwErr = !loginPassword ? "Password required" : validatePasswordStrength(loginPassword);
+    if (_pwErr) {
+      setError(_pwErr);
       return;
     }
     setLoading(true);
@@ -455,7 +459,7 @@ export default function Home() {
       setLoading(false);
       return;
     }
-    const res = await fetch("/api/game/join", {
+    const res = await apiFetch("/api/game/join", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -480,7 +484,7 @@ export default function Home() {
   }
 
   async function updateSessionVisibility(newIsPublic: boolean) {
-    const res = await fetch("/api/game/session", {
+    const res = await apiFetch("/api/game/session", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ sessionId: gameSessionId, playerName, isPublic: newIsPublic }),
@@ -491,7 +495,7 @@ export default function Home() {
   }
 
   async function updateTurnTimer(secs: number) {
-    const res = await fetch("/api/game/session", {
+    const res = await apiFetch("/api/game/session", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ sessionId: gameSessionId, playerName, turnTimeoutSecs: secs }),
@@ -504,7 +508,7 @@ export default function Home() {
   async function login() {
     setLoading(true);
     setError("");
-    const resAuth = await fetch("/api/auth/login", {
+    const resAuth = await apiFetch("/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username: inputName.trim(), password: loginPassword }),
@@ -522,7 +526,7 @@ export default function Home() {
       return;
     }
     if (resAuth.status === 404) {
-      const res = await fetch("/api/game/status", {
+      const res = await apiFetch("/api/game/status", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: inputName, password: loginPassword }),
@@ -588,7 +592,7 @@ export default function Home() {
       return;
     }
     setLoading(true);
-    const res = await fetch("/api/auth/signup", {
+    const res = await apiFetch("/api/auth/signup", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -655,7 +659,7 @@ export default function Home() {
   async function handleSkipTurn() {
     if (gameState?.turnMode === "simultaneous" && gameState.canAct && !gameState.turnOpen) {
       try {
-        await fetch("/api/game/tick", {
+        await apiFetch("/api/game/tick", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ playerName }),
@@ -677,7 +681,7 @@ export default function Home() {
     let res: Response;
     const simultaneous = gameState?.turnMode === "simultaneous";
     try {
-      res = await fetch("/api/game/action", {
+      res = await apiFetch("/api/game/action", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ playerName, action, ...params }),
@@ -833,7 +837,7 @@ export default function Home() {
 
     (async () => {
       try {
-        const res = await fetch("/api/game/tick", {
+        const res = await apiFetch("/api/game/tick", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ playerName }),

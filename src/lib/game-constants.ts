@@ -188,7 +188,8 @@ export const CIVIL_DESERTION_RATE_PER_LEVEL = 8; // percent per civilStatus leve
 /** Account signup, session sizing */
 export const AUTH = {
   PASSWORD_MIN_SIGNUP: 8,
-  PASSWORD_MIN_GAME_LEGACY: 3,
+  PASSWORD_MIN_GAME_LEGACY: 8,
+  PASSWORD_MIN_ADMIN: 12,
 } as const;
 
 export const SESSION = {

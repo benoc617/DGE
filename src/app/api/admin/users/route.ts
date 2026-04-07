@@ -3,9 +3,10 @@ import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/admin-auth";
 import { AUTH } from "@/lib/game-constants";
+import { validatePasswordStrength } from "@/lib/auth";
 
 export async function GET(req: NextRequest) {
-  const denied = requireAdmin(req);
+  const denied = await requireAdmin(req);
   if (denied) return denied;
 
   const accounts = await prisma.userAccount.findMany({
@@ -73,7 +74,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function PATCH(req: NextRequest) {
-  const denied = requireAdmin(req);
+  const denied = await requireAdmin(req);
   if (denied) return denied;
 
   const body = await req.json();
@@ -83,11 +84,9 @@ export async function PATCH(req: NextRequest) {
   if (!userId) {
     return NextResponse.json({ error: "userId is required" }, { status: 400 });
   }
-  if (newPassword.length < AUTH.PASSWORD_MIN_SIGNUP) {
-    return NextResponse.json(
-      { error: `Password must be at least ${AUTH.PASSWORD_MIN_SIGNUP} characters` },
-      { status: 400 },
-    );
+  const pwErr = validatePasswordStrength(newPassword);
+  if (pwErr) {
+    return NextResponse.json({ error: pwErr }, { status: 400 });
   }
 
   const exists = await prisma.userAccount.findUnique({ where: { id: userId }, select: { id: true } });
@@ -95,7 +94,8 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ error: "User not found" }, { status: 404 });
   }
 
-  const passwordHash = await bcrypt.hash(newPassword, 10);
+  const { BCRYPT_ROUNDS } = await import("@/lib/admin-auth");
+  const passwordHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
   await prisma.$transaction(async (tx) => {
     await tx.userAccount.update({
       where: { id: userId },
@@ -111,7 +111,7 @@ export async function PATCH(req: NextRequest) {
 }
 
 export async function DELETE(req: NextRequest) {
-  const denied = requireAdmin(req);
+  const denied = await requireAdmin(req);
   if (denied) return denied;
 
   const userId = req.nextUrl.searchParams.get("id");

@@ -13,6 +13,7 @@ import {
   completeDoorDaySlots,
   pollStatusUntil,
   scheduleTestGalaxyDeletion,
+  TEST_PASSWORD,
 } from "./helpers";
 import { ACTIONS_PER_DAY, START } from "../../src/lib/game-constants";
 
@@ -21,7 +22,7 @@ describe("door-game simultaneous mode", () => {
     const g = uniqueGalaxy("Door");
     const player1Name = uniqueName("Door1");
     const player2Name = uniqueName("Door2");
-    const password = "doorgame";
+    const password = TEST_PASSWORD;
 
     const r1 = await register(player1Name, password, { galaxyName: g, turnMode: "simultaneous" });
     expect(r1.status).toBe(201);
@@ -83,7 +84,7 @@ describe("door-game simultaneous mode", () => {
   it("concurrent POST /action from one player: one 200 and one 409 galaxy busy (advisory lock)", async () => {
     const g = uniqueGalaxy("DoorLock");
     const player1Name = uniqueName("DoorL1");
-    const password = "doorgame";
+    const password = TEST_PASSWORD;
 
     const r1 = await register(player1Name, password, { galaxyName: g, turnMode: "simultaneous" });
     expect(r1.status).toBe(201);
@@ -112,7 +113,7 @@ describe("door-game simultaneous mode", () => {
     const g = uniqueGalaxy("DoorRoll");
     const player1Name = uniqueName("DoorR1");
     const player2Name = uniqueName("DoorR2");
-    const password = "doorgame";
+    const password = TEST_PASSWORD;
 
     const r1 = await register(player1Name, password, { galaxyName: g, turnMode: "simultaneous" });
     expect(r1.status).toBe(201);
@@ -147,7 +148,7 @@ describe("door-game simultaneous mode", () => {
   it("human can tick with AI in session; status polls run AIs; calendar day rolls when all daily slots done", async () => {
     const g = uniqueGalaxy("DoorAI");
     const humanName = uniqueName("DoorHum");
-    const password = "doorgame";
+    const password = TEST_PASSWORD;
 
     const r1 = await register(humanName, password, { galaxyName: g, turnMode: "simultaneous" });
     expect(r1.status).toBe(201);

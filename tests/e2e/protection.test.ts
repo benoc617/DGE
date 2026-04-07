@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { register, joinGame, doAction, uniqueName, uniqueGalaxy, deleteTestGalaxySession } from "./helpers";
+import { register, joinGame, doAction, uniqueName, uniqueGalaxy, deleteTestGalaxySession, TEST_PASSWORD } from "./helpers";
 
 describe("E2E: New-empire protection", () => {
   const a = uniqueName("ProtA");
   const b = uniqueName("ProtB");
-  const password = "testpass";
+  const password = TEST_PASSWORD;
   let sessionId: string;
 
   beforeAll(async () => {

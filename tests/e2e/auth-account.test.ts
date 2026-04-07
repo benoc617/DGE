@@ -6,6 +6,7 @@ import {
   uniqueGalaxy,
   scheduleTestGalaxyDeletion,
   scheduleTestUserDeletion,
+  TEST_PASSWORD,
 } from "./helpers";
 
 describe("auth account API", () => {
@@ -17,8 +18,8 @@ describe("auth account API", () => {
         username: u,
         fullName: "Test Commander",
         email: `${u}@test.invalid`,
-        password: "password123",
-        passwordConfirm: "password123",
+        password: TEST_PASSWORD,
+        passwordConfirm: TEST_PASSWORD,
       }),
     });
     expect(signup.status).toBe(201);
@@ -26,7 +27,7 @@ describe("auth account API", () => {
 
     const authLogin = await api("/api/auth/login", {
       method: "POST",
-      body: JSON.stringify({ username: u, password: "password123" }),
+      body: JSON.stringify({ username: u, password: TEST_PASSWORD }),
     });
     expect(authLogin.status).toBe(200);
     const d = authLogin.data as { user: { username: string }; games: unknown[] };
@@ -43,21 +44,21 @@ describe("auth account API", () => {
         username: u,
         fullName: "Link Test",
         email: `${u}@test.invalid`,
-        password: "password123",
-        passwordConfirm: "password123",
+        password: TEST_PASSWORD,
+        passwordConfirm: TEST_PASSWORD,
       }),
     });
     expect(signup.status).toBe(201);
     scheduleTestUserDeletion(u);
 
-    const { status, data } = await register(u, "password123", { galaxyName: uniqueGalaxy("AuthLnk") });
+    const { status, data } = await register(u, TEST_PASSWORD, { galaxyName: uniqueGalaxy("AuthLnk") });
     expect(status).toBe(201);
     scheduleTestGalaxyDeletion((data as { gameSessionId?: string }).gameSessionId);
     expect((data as { name?: string }).name).toBe(u.toLowerCase());
 
     const authLogin = await api("/api/auth/login", {
       method: "POST",
-      body: JSON.stringify({ username: u, password: "password123" }),
+      body: JSON.stringify({ username: u, password: TEST_PASSWORD }),
     });
     expect(authLogin.status).toBe(200);
     const d = authLogin.data as { games: { playerId: string }[] };

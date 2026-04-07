@@ -9,6 +9,7 @@ import {
   clearNewEmpireProtectionForPlayers,
   deleteTestGalaxySession,
   scheduleTestGalaxyDeletion,
+  TEST_PASSWORD,
 } from "./helpers";
 
 /**
@@ -18,7 +19,7 @@ import {
 describe("E2E: combat loss reporting (API)", () => {
   it("attack_pirates includes your unit losses in message and combatResult", async () => {
     const name = uniqueName("PirateLoss");
-    const password = "testpass";
+    const password = TEST_PASSWORD;
     const { data: reg } = await register(name, password, { galaxyName: uniqueGalaxy() });
     scheduleTestGalaxyDeletion((reg as { gameSessionId?: string }).gameSessionId);
     await doTick(name);
@@ -41,7 +42,7 @@ describe("E2E: combat loss reporting (API)", () => {
     const galaxy = uniqueGalaxy("CombatRpt");
     const p1 = uniqueName("CRP1");
     const p2 = uniqueName("CRP2");
-    const password = "testpass";
+    const password = TEST_PASSWORD;
     let sessionId: string;
 
     beforeAll(async () => {

@@ -8,6 +8,7 @@ import {
   uniqueGalaxy,
   clearNewEmpireProtectionForPlayers,
   deleteTestGalaxySession,
+  TEST_PASSWORD,
 } from "./helpers";
 
 /**
@@ -17,7 +18,7 @@ describe("E2E: defender situation-report alerts", () => {
   const galaxy = uniqueGalaxy("AlertGal");
   const p1 = uniqueName("AlertP1");
   const p2 = uniqueName("AlertP2");
-  const password = "testpass";
+  const password = TEST_PASSWORD;
   let sessionId: string;
 
   beforeAll(async () => {

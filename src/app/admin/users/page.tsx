@@ -35,6 +35,10 @@ function fmtIso(iso: string | null): string {
 
 export default function AdminUsersPage() {
   const [authed, setAuthed] = useState<boolean | null>(null);
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [loginError, setLoginError] = useState("");
+  const [loginLoading, setLoginLoading] = useState(false);
   const [users, setUsers] = useState<UserRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState("");
@@ -44,16 +48,31 @@ export default function AdminUsersPage() {
   const [pwConfirm, setPwConfirm] = useState("");
   const [pwLoading, setPwLoading] = useState(false);
 
+  function adminHeaders(): HeadersInit {
+    return {
+      "Content-Type": "application/json",
+      "X-SRX-CSRF": "1",
+      Authorization: "Basic " + btoa(username + ":" + password),
+    };
+  }
+
   const checkMe = useCallback(async () => {
-    const res = await fetch("/api/admin/me", { credentials: "include" });
+    if (!username || !password) {
+      setAuthed(false);
+      return false;
+    }
+    const res = await fetch("/api/admin/me", {
+      headers: { Authorization: "Basic " + btoa(username + ":" + password) },
+    });
     setAuthed(res.ok);
     return res.ok;
-  }, []);
+  }, [username, password]);
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   const loadUsers = useCallback(async () => {
     setLoadError("");
     setLoading(true);
-    const res = await fetch("/api/admin/users", { credentials: "include" });
+    const res = await fetch("/api/admin/users", { headers: adminHeaders() });
     setLoading(false);
     if (!res.ok) {
       setLoadError(res.status === 401 ? "Not signed in." : "Failed to load users.");
@@ -86,8 +105,7 @@ export default function AdminUsersPage() {
     setPwLoading(true);
     const res = await fetch("/api/admin/users", {
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      credentials: "include",
+      headers: adminHeaders(),
       body: JSON.stringify({ userId: pwUserId, newPassword: pwNew }),
     });
     setPwLoading(false);
@@ -111,7 +129,7 @@ export default function AdminUsersPage() {
     if (!ok) return;
     const res = await fetch(`/api/admin/users?id=${encodeURIComponent(user.id)}`, {
       method: "DELETE",
-      credentials: "include",
+      headers: { Authorization: "Basic " + btoa(username + ":" + password) },
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -119,6 +137,27 @@ export default function AdminUsersPage() {
       return;
     }
     await loadUsers();
+  }
+
+  async function handleLogin(e: React.FormEvent) {
+    e.preventDefault();
+    setLoginError("");
+    setLoginLoading(true);
+    const res = await fetch("/api/admin/login", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-SRX-CSRF": "1",
+        Authorization: "Basic " + btoa(username + ":" + password),
+      },
+      body: JSON.stringify({ username, password }),
+    });
+    setLoginLoading(false);
+    if (!res.ok) {
+      setLoginError("Invalid credentials");
+      return;
+    }
+    setAuthed(true);
   }
 
   if (authed === null) {
@@ -132,9 +171,34 @@ export default function AdminUsersPage() {
   if (!authed) {
     return (
       <main className="min-h-screen bg-black text-green-400 font-mono flex flex-col items-center justify-center px-4">
-        <p className="text-yellow-600 text-sm mb-4">Sign in to the admin console first.</p>
-        <Link href="/admin" className="text-cyan-600 border border-cyan-800 px-4 py-2 hover:bg-cyan-950/30">
-          Go to admin login
+        <h1 className="text-yellow-400 font-bold tracking-widest mb-6 text-lg">SRX ADMIN — USERS</h1>
+        <form onSubmit={handleLogin} className="border border-green-800 p-6 w-full max-w-sm space-y-3">
+          <label className="text-green-700 text-xs block">Username</label>
+          <input
+            className="w-full bg-black border border-green-700 text-green-300 px-2 py-1.5 text-sm"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            autoComplete="username"
+          />
+          <label className="text-green-700 text-xs block">Password</label>
+          <input
+            type="password"
+            className="w-full bg-black border border-green-700 text-green-300 px-2 py-1.5 text-sm"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete="current-password"
+          />
+          {loginError && <p className="text-red-500 text-xs">{loginError}</p>}
+          <button
+            type="submit"
+            disabled={loginLoading}
+            className="w-full border border-yellow-600 py-2 text-yellow-400 hover:bg-yellow-900/20 disabled:opacity-40"
+          >
+            SIGN IN
+          </button>
+        </form>
+        <Link href="/admin" className="mt-8 text-green-800 text-xs hover:text-green-500">
+          ← Back to admin
         </Link>
       </main>
     );

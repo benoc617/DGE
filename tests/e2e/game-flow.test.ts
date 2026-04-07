@@ -10,12 +10,13 @@ import {
   uniqueGalaxy,
   deleteTestGalaxySession,
   scheduleTestGalaxyDeletion,
+  TEST_PASSWORD,
 } from "./helpers";
 
 describe("E2E: Game Flow", () => {
   describe("registration and login", () => {
     const name = uniqueName("RegTest");
-    const password = "testpass";
+    const password = TEST_PASSWORD;
     let playerId: string;
     let sessionId: string;
 
@@ -59,7 +60,7 @@ describe("E2E: Game Flow", () => {
 
   describe("taking actions", () => {
     const name = uniqueName("ActionTest");
-    const password = "testpass";
+    const password = TEST_PASSWORD;
     let playerId: string;
     let sessionId: string;
 
@@ -123,7 +124,7 @@ describe("E2E: Game Flow", () => {
 
   describe("with AI opponents", () => {
     const name = uniqueName("AITest");
-    const password = "testpass";
+    const password = TEST_PASSWORD;
     let playerId: string;
     let sessionId: string;
 

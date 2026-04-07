@@ -10,13 +10,14 @@ import {
   uniqueName,
   uniqueGalaxy,
   deleteTestGalaxySession,
+  TEST_PASSWORD,
 } from "./helpers";
 
 describe("E2E: Multiplayer Turn Order", () => {
   const galaxy = uniqueGalaxy("MPTest");
   const player1Name = uniqueName("P1");
   const player2Name = uniqueName("P2");
-  const password = "testpass";
+  const password = TEST_PASSWORD;
   let player1Id: string;
   let player2Id: string;
   let sessionId: string;
@@ -101,7 +102,7 @@ describe("E2E: Multiplayer Turn Order", () => {
 describe("E2E: Multiplayer with AI", () => {
   const galaxy = uniqueGalaxy("MPAITest");
   const humanName = uniqueName("Human");
-  const password = "testpass";
+  const password = TEST_PASSWORD;
   let humanId: string;
   let sessionId: string;
   let inviteCode: string;
@@ -153,7 +154,7 @@ describe("E2E: Mid-game join", () => {
   const galaxy = uniqueGalaxy("MidJoinTest");
   const player1Name = uniqueName("Early");
   const player2Name = uniqueName("Late");
-  const password = "testpass";
+  const password = TEST_PASSWORD;
   let player1Id: string;
   let player2Id: string;
   let sessionId: string;

@@ -1,7 +1,8 @@
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
 import { AUTH } from "@/lib/game-constants";
-import { normalizeUsername } from "@/lib/auth";
+import { BCRYPT_ROUNDS } from "@/lib/admin-auth";
+import { normalizeUsername, validatePasswordStrength } from "@/lib/auth";
 
 export type ResolvedPlayerCredentials =
   | { playerName: string; passwordHash: string; userId: string | null }
@@ -38,15 +39,13 @@ export async function resolvePlayerCredentials(
   if (trimmed.length < 2) {
     return { error: "Name must be at least 2 characters", status: 400 };
   }
-  if (password.length < AUTH.PASSWORD_MIN_GAME_LEGACY) {
-    return {
-      error: `Password must be at least ${AUTH.PASSWORD_MIN_GAME_LEGACY} characters`,
-      status: 400,
-    };
+  const pwErr = validatePasswordStrength(password, AUTH.PASSWORD_MIN_GAME_LEGACY);
+  if (pwErr) {
+    return { error: pwErr, status: 400 };
   }
   return {
     playerName: trimmed,
-    passwordHash: await bcrypt.hash(password, 10),
+    passwordHash: await bcrypt.hash(password, BCRYPT_ROUNDS),
     userId: null,
   };
 }

@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/prisma";
-import { AUTH } from "@/lib/game-constants";
-import { normalizeEmail, normalizeUsername, isValidEmail } from "@/lib/auth";
+import { normalizeEmail, normalizeUsername, isValidEmail, validatePasswordStrength } from "@/lib/auth";
 
 export async function POST(req: NextRequest) {
   const body = await req.json();
@@ -22,11 +21,9 @@ export async function POST(req: NextRequest) {
   if (!isValidEmail(email)) {
     return NextResponse.json({ error: "Valid email address is required" }, { status: 400 });
   }
-  if (password.length < AUTH.PASSWORD_MIN_SIGNUP) {
-    return NextResponse.json(
-      { error: `Password must be at least ${AUTH.PASSWORD_MIN_SIGNUP} characters` },
-      { status: 400 },
-    );
+  const pwErr = validatePasswordStrength(password);
+  if (pwErr) {
+    return NextResponse.json({ error: pwErr }, { status: 400 });
   }
   if (password !== passwordConfirm) {
     return NextResponse.json({ error: "Passwords do not match" }, { status: 400 });
@@ -43,7 +40,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Email already registered" }, { status: 409 });
   }
 
-  const passwordHash = await bcrypt.hash(password, 10);
+  const { BCRYPT_ROUNDS } = await import("@/lib/admin-auth");
+  const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
   await prisma.userAccount.create({
     data: {
       username: normUser,

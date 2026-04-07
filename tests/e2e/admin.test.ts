@@ -19,6 +19,7 @@ import {
   adminDeleteUser,
   deleteTestGalaxySession,
   scheduleTestUserDeletion,
+  TEST_PASSWORD,
 } from "./helpers";
 
 describe("E2E: Admin API", () => {
@@ -75,8 +76,8 @@ describe("E2E: Admin API", () => {
         username: u,
         fullName: "Admin Test User",
         email: `${u}@e2e.invalid`,
-        password: "originalpw99",
-        passwordConfirm: "originalpw99",
+        password: TEST_PASSWORD,
+        passwordConfirm: TEST_PASSWORD,
       }),
     });
     expect(signup.status).toBe(201);
@@ -91,12 +92,12 @@ describe("E2E: Admin API", () => {
     const row = users.find((x) => x.username === u.toLowerCase());
     expect(row).toBeTruthy();
 
-    const patch = await adminSetUserPassword(cookie!, row!.id, "newforcedpw88");
+    const patch = await adminSetUserPassword(cookie!, row!.id, "NewForced!88");
     expect(patch.status).toBe(200);
 
     const loginNew = await api("/api/auth/login", {
       method: "POST",
-      body: JSON.stringify({ username: u, password: "newforcedpw88" }),
+      body: JSON.stringify({ username: u, password: "NewForced!88" }),
     });
     expect(loginNew.status).toBe(200);
 
@@ -129,7 +130,7 @@ describe("E2E: Admin API", () => {
     expect(body.inviteCode).toBeTruthy();
 
     const joiner = uniqueName("StagingJoin");
-    const { status: joinSt, data: joinData } = await joinGame(joiner, "testpass", { inviteCode: body.inviteCode });
+    const { status: joinSt, data: joinData } = await joinGame(joiner, TEST_PASSWORD, { inviteCode: body.inviteCode });
     expect(joinSt).toBe(201);
     expect(joinData.gameSessionId).toBe(body.sessionId);
 

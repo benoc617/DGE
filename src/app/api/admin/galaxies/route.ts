@@ -16,7 +16,7 @@ async function generateUniqueInviteCode(): Promise<string> {
 }
 
 export async function GET(req: NextRequest) {
-  const denied = requireAdmin(req);
+  const denied = await requireAdmin(req);
   if (denied) return denied;
 
   const sessions = await prisma.gameSession.findMany({
@@ -53,7 +53,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const denied = requireAdmin(req);
+  const denied = await requireAdmin(req);
   if (denied) return denied;
 
   const body = await req.json().catch(() => ({}));
@@ -107,7 +107,7 @@ export async function POST(req: NextRequest) {
 
 /** Body: `{ ids: string[] }` — session CUIDs to delete (per-row or bulk). */
 export async function DELETE(req: NextRequest) {
-  const denied = requireAdmin(req);
+  const denied = await requireAdmin(req);
   if (denied) return denied;
 
   const body = await req.json().catch(() => ({}));

@@ -14,6 +14,7 @@ import {
   runAI,
   scheduleTestGalaxyDeletion,
   deleteTestGalaxySession,
+  TEST_PASSWORD,
 } from "./helpers";
 
 describe("E2E: auxiliary API routes", () => {
@@ -41,7 +42,7 @@ describe("E2E: auxiliary API routes", () => {
 
   it("POST /api/game/gameover returns standings and marks game over", async () => {
     const name = uniqueName("GOE2E");
-    const { status: regStatus, data: reg } = await register(name, "testpass", { galaxyName: uniqueGalaxy("GOGal") });
+    const { status: regStatus, data: reg } = await register(name, TEST_PASSWORD, { galaxyName: uniqueGalaxy("GOGal") });
     expect(regStatus).toBe(201);
     scheduleTestGalaxyDeletion((reg as { gameSessionId?: string }).gameSessionId);
     const { status, data } = await postGameOver(name);
@@ -59,7 +60,7 @@ describe("E2E: auxiliary API routes", () => {
 
   it("POST /api/ai/run-all returns results array (empty when human's turn)", async () => {
     const name = uniqueName("RunAllE2E");
-    const { data } = await register(name, "testpass", { galaxyName: uniqueGalaxy("RunAllGal") });
+    const { data } = await register(name, TEST_PASSWORD, { galaxyName: uniqueGalaxy("RunAllGal") });
     scheduleTestGalaxyDeletion(data.gameSessionId as string);
     const { status, data: out } = await runAI(data.gameSessionId as string);
     expect(status).toBe(200);
@@ -68,7 +69,7 @@ describe("E2E: auxiliary API routes", () => {
 
   it("POST /api/ai/turn rejects non-AI player", async () => {
     const name = uniqueName("NotAI");
-    const { data: reg } = await register(name, "testpass", { galaxyName: uniqueGalaxy("AiTurnGal") });
+    const { data: reg } = await register(name, TEST_PASSWORD, { galaxyName: uniqueGalaxy("AiTurnGal") });
     scheduleTestGalaxyDeletion((reg as { gameSessionId?: string }).gameSessionId);
     const { status } = await api("/api/ai/turn", {
       method: "POST",
@@ -85,7 +86,7 @@ describe("E2E: auxiliary API routes", () => {
   describe("session-scoped messaging", () => {
     const a = uniqueName("MsgA");
     const b = uniqueName("MsgB");
-    const password = "testpass";
+    const password = TEST_PASSWORD;
     let sessionId: string;
 
     beforeAll(async () => {

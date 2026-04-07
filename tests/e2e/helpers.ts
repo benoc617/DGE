@@ -7,6 +7,9 @@ import { ACTIONS_PER_DAY } from "../../src/lib/game-constants";
 
 export const BASE = process.env.TEST_BASE_URL || "http://localhost:3000";
 
+/** Shared test password that meets complexity requirements (uppercase, lowercase, digit, special char). */
+export const TEST_PASSWORD = "Test1ng!Pass";
+
 export async function sleep(ms: number) {
   await new Promise((r) => setTimeout(r, ms));
 }
@@ -20,9 +23,13 @@ export async function clearNewEmpireProtectionForPlayers(names: string[]) {
   });
 }
 
+const MUTATING = new Set(["POST", "PATCH", "PUT", "DELETE"]);
+
 export async function api(path: string, options?: RequestInit) {
+  const method = (options?.method ?? "GET").toUpperCase();
+  const csrfHeaders = MUTATING.has(method) ? { "X-SRX-CSRF": "1" } : {};
   const res = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json", ...options?.headers },
+    headers: { "Content-Type": "application/json", ...csrfHeaders, ...options?.headers },
     ...options,
   });
   const text = await res.text();
@@ -189,16 +196,25 @@ export async function postMessage(fromName: string, toName: string, body: string
   });
 }
 
-/** Parse first `name=value` from Set-Cookie for Cookie header replay in Node fetch. */
-export function cookieHeaderFromSetCookie(setCookie: string | null): string | undefined {
-  if (!setCookie) return undefined;
-  return setCookie.split(";")[0]?.trim() || undefined;
+/** Build Basic auth header value for admin API calls. */
+function adminBasicAuth(username: string, password: string): string {
+  return "Basic " + Buffer.from(`${username}:${password}`).toString("base64");
 }
 
-/** Shared fetch wrapper for admin API calls — handles Cookie header and JSON parsing. */
+const DEFAULT_ADMIN_USER = "admin";
+const DEFAULT_ADMIN_PASS = process.env.INITIAL_ADMIN_PASSWORD ?? "srxpass";
+
+/** Shared fetch wrapper for admin API calls — sends Basic auth + CSRF header. */
 async function adminFetch(path: string, cookie: string, options?: RequestInit) {
+  const method = (options?.method ?? "GET").toUpperCase();
+  const csrfHeaders = MUTATING.has(method) ? { "X-SRX-CSRF": "1" } : {};
   const r = await fetch(`${BASE}${path}`, {
-    headers: { "Content-Type": "application/json", Cookie: cookie, ...options?.headers },
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: cookie,
+      ...csrfHeaders,
+      ...options?.headers,
+    },
     ...options,
   });
   return {
@@ -207,25 +223,21 @@ async function adminFetch(path: string, cookie: string, options?: RequestInit) {
   };
 }
 
-export async function adminLogin(username = "admin", password = "srxpass") {
+export async function adminLogin(username = DEFAULT_ADMIN_USER, password = DEFAULT_ADMIN_PASS) {
+  const auth = adminBasicAuth(username, password);
   const res = await fetch(`${BASE}/api/admin/login`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", Authorization: auth, "X-SRX-CSRF": "1" },
     body: JSON.stringify({ username, password }),
   });
-  const raw = res.headers.get("set-cookie");
-  return { status: res.status, cookie: cookieHeaderFromSetCookie(raw) };
+  return { status: res.status, cookie: auth };
 }
 
-/** Run a callback with an admin cookie, logging out afterwards. */
+/** Run a callback with admin Basic auth credentials. */
 export async function withAdminCookie<T>(fn: (cookie: string) => Promise<T>): Promise<T> {
   const { status, cookie } = await adminLogin();
   if (status !== 200 || !cookie) throw new Error(`admin login failed (${status})`);
-  try {
-    return await fn(cookie);
-  } finally {
-    await adminLogout(cookie);
-  }
+  return fn(cookie);
 }
 
 export async function adminGalaxies(cookie: string) {
@@ -311,11 +323,9 @@ export async function flushScheduledTestUserDeletions(): Promise<void> {
   await deleteTestUserAccountsByUsernames(names);
 }
 
-export async function adminLogout(cookie: string) {
-  return fetch(`${BASE}/api/admin/logout`, {
-    method: "POST",
-    headers: { Cookie: cookie },
-  }).then((r) => ({ status: r.status }));
+export async function adminLogout(_cookie: string) {
+  // No-op: admin auth is now per-request (no session to invalidate)
+  return { status: 200 };
 }
 
 export async function adminChangePassword(cookie: string, currentPassword: string, newPassword: string) {
@@ -376,7 +386,7 @@ export async function setupTwoPlayerGame(
   const galaxy = uniqueGalaxy("MPTest");
   const p1Name = uniqueName(p1Prefix);
   const p2Name = uniqueName(p2Prefix);
-  const pwd = opts?.password ?? "testpass";
+  const pwd = opts?.password ?? TEST_PASSWORD;
 
   const reg = await register(p1Name, pwd, { galaxyName: galaxy, isPublic: false, turnMode: opts?.turnMode });
   if (reg.status !== 201) throw new Error(`register failed: ${reg.status} ${JSON.stringify(reg.data)}`);
