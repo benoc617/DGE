@@ -32,6 +32,7 @@ import { generatePlanetName, START } from "./game-constants";
 import * as rng from "./rng";
 import { setSeed } from "./rng";
 import type { PlanetType } from "@prisma/client";
+import type { PrismaEmpireShape } from "./sim-state";
 
 export type SessionSimTurnMode = "sequential" | "simultaneous";
 
@@ -75,6 +76,22 @@ async function fetchRivals(
       isProtected: p.empire!.isProtected && p.empire!.protectionTurns > 0,
       credits: p.empire!.credits,
     }));
+}
+
+/** Fetch full rival empire shapes for search strategies (mcts/maxn). */
+async function fetchRivalShapes(
+  sessionId: string,
+  ownEmpireId: string,
+): Promise<PrismaEmpireShape[]> {
+  const players = await prisma.player.findMany({
+    where: { gameSessionId: sessionId },
+    include: {
+      empire: { include: { planets: true, army: true, research: true, supplyRates: true } },
+    },
+  });
+  return players
+    .filter((p) => p.empire && p.empire.id !== ownEmpireId && p.empire.turnsLeft > 0)
+    .map((p) => ({ ...(p.empire as PrismaEmpireShape), player: { name: p.name } }));
 }
 
 async function createSessionAndPlayers(config: SessionSimConfig): Promise<{
@@ -292,13 +309,21 @@ export async function runSessionSimulation(config: SessionSimConfig): Promise<Si
           continue;
         }
 
-        const [loanCount, rivals] = await Promise.all([
+        const isSearchStrategy = hp.strategy === "mcts" || hp.strategy === "maxn";
+        const [loanCount, rivals, rivalShapes] = await Promise.all([
           prisma.loan.count({ where: { empireId: empire.id } }),
           fetchRivals(sessionId, empire.id),
+          isSearchStrategy ? fetchRivalShapes(sessionId, empire.id) : Promise.resolve(undefined),
         ]);
         const ctx = strategyContextFromEmpire(empire, loanCount, rivals);
         const phaseTurn = phaseTurnForStrategy(config.turns, empire.turnsLeft);
-        const { action, params } = pickSimAction(hp.strategy, ctx, phaseTurn);
+        const { action, params } = pickSimAction(
+          hp.strategy,
+          ctx,
+          phaseTurn,
+          isSearchStrategy ? (empire as unknown as PrismaEmpireShape) : undefined,
+          rivalShapes,
+        );
 
         const out = await processAiMoveOrSkip(hp.playerId, action, params, { aiReasoning: "(session sim)" }, undefined);
         const report = out.finalResult.turnReport;
@@ -356,13 +381,21 @@ export async function runSessionSimulation(config: SessionSimConfig): Promise<Si
             break;
           }
 
-          const [loanCount, rivals] = await Promise.all([
+          const isSearchStrategy = hp.strategy === "mcts" || hp.strategy === "maxn";
+          const [loanCount, rivals, rivalShapes] = await Promise.all([
             prisma.loan.count({ where: { empireId: empire.id } }),
             fetchRivals(sessionId, empire.id),
+            isSearchStrategy ? fetchRivalShapes(sessionId, empire.id) : Promise.resolve(undefined),
           ]);
           const ctx = strategyContextFromEmpire(empire, loanCount, rivals);
           const phaseTurn = phaseTurnForStrategy(config.turns, empire.turnsLeft);
-          const { action, params } = pickSimAction(hp.strategy, ctx, phaseTurn);
+          const { action, params } = pickSimAction(
+            hp.strategy,
+            ctx,
+            phaseTurn,
+            isSearchStrategy ? (empire as unknown as PrismaEmpireShape) : undefined,
+            rivalShapes,
+          );
 
           if (action === "end_turn") {
             const r = await processAction(pl.id, "end_turn", undefined, doorEndTurnOpts);

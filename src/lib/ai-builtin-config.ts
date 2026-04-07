@@ -5,6 +5,7 @@ export const AI_CONFIGS = [
   { name: "Shadow Nyx", persona: "spymaster" as const },
   { name: "Ambassador Sol", persona: "diplomat" as const },
   { name: "Fortress Prime", persona: "turtle" as const },
+  { name: "Optimax", persona: "optimal" as const },
 ] as const;
 
 export type AIPersonaKey = (typeof AI_CONFIGS)[number]["persona"];

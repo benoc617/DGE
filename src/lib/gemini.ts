@@ -2,6 +2,8 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 import { PLANET_CONFIG, UNIT_COST } from "@/lib/game-constants";
 import { targetHasNewEmpireProtection } from "@/lib/empire-protection";
 import * as rng from "@/lib/rng";
+import { empireFromPrisma, makeRng, type PrismaEmpireShape } from "@/lib/sim-state";
+import { searchOpponentMove, buildSearchStates } from "@/lib/search-opponent";
 
 const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
 
@@ -80,6 +82,11 @@ against the net-worth leader when they are overextended, weakened by others, or 
 win decisively—deny them safe expansion. Counter-attack hard when attacked; punish bullies.
 High tax tolerance (50-60%) to fund walls and fleets.
 Key: Impenetrable defense, then break whoever tries to run away with the galaxy.`,
+
+  optimal: `You are "The Optimal Commander" — a search-based AI that evaluates the game tree.
+You use Monte Carlo Tree Search to look ahead and choose the statistically strongest action.
+You adapt to every situation without fixed heuristics.
+Key: Tree search, not instinct.`,
 };
 
 interface EmpireState {
@@ -447,11 +454,83 @@ Respond ONLY with valid JSON:
   }
 }
 
+/**
+ * Time-budgeted MCTS fallback for the "optimal" persona.
+ * Runs until `budgetMs` wall-clock ms elapsed; returns null on any error so
+ * `localFallback` can drop through to the heuristic policy.
+ */
+function mctsLocalFallback(
+  state: EmpireState,
+  budgetMs: number,
+): { action: string; reasoning: string; [key: string]: unknown } | null {
+  try {
+    const seedVal = rng.getSeed();
+    const localRng = seedVal !== null ? makeRng(seedVal) : undefined;
+    const iterations = Math.max(20, Math.floor(budgetMs / 0.5)); // rough: ~0.5ms per iteration
+    const shape: PrismaEmpireShape = {
+      id: "optimal-ai",
+      credits: state.credits ?? 0,
+      food: state.food ?? 0,
+      ore: state.ore ?? 0,
+      fuel: state.fuel ?? 0,
+      population: state.population ?? 0,
+      taxRate: state.taxRate ?? 25,
+      civilStatus: state.civilStatus ?? 0,
+      netWorth: state.netWorth ?? 0,
+      turnsLeft: state.turnsLeft ?? 0,
+      turnsPlayed: state.turnsPlayed ?? 0,
+      isProtected: state.isProtected ?? false,
+      protectionTurns: state.protectionTurns ?? 0,
+      foodSellRate: state.foodSellRate ?? 0,
+      oreSellRate: state.oreSellRate ?? 50,
+      petroleumSellRate: state.petroleumSellRate ?? 50,
+      planets: (state.planets ?? []).map((p) => ({
+        type: p.type,
+        shortTermProduction: p.shortTermProduction,
+        longTermProduction: p.shortTermProduction, // best guess
+      })),
+      army: {
+        ...state.army,
+        covertPoints: state.army?.covertPoints ?? 0,
+        commandShipStrength: state.army?.commandShipStrength ?? 0,
+        soldiersLevel: 1, fightersLevel: 1, stationsLevel: 1,
+        lightCruisersLevel: 1, heavyCruisersLevel: 1,
+      },
+      research: state.research ?? { accumulatedPoints: 0, unlockedTechIds: [] },
+      supplyRates: null,
+      loans: 0,
+    };
+    const selfState = empireFromPrisma(shape, "optimal-ai");
+    const { states, playerIdx } = buildSearchStates(selfState, []);
+    const move = searchOpponentMove(states, playerIdx, {
+      strategy: "mcts",
+      mcts: {
+        iterations: Math.min(600, iterations),
+        rolloutDepth: 10,
+        seed: localRng ? Math.floor(localRng() * 0xffffffff) : undefined,
+      },
+    });
+    return {
+      action: move.action,
+      ...move.params,
+      reasoning: `MCTS(${Math.min(600, iterations)} iters): ${move.label}`,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function localFallback(
   state: EmpireState,
   persona: string,
   ctx: AIMoveContext,
 ): { action: string; target?: string; amount?: number; reasoning: string; opType?: number; [key: string]: unknown } {
+  // Optimal persona: use MCTS with a 300ms budget
+  if (persona.includes("Optimal") || persona.includes("optimal")) {
+    const mctsResult = mctsLocalFallback(state, 300);
+    if (mctsResult) return mctsResult as { action: string; reasoning: string; [key: string]: unknown };
+  }
+
   const s = state;
   const planets = s?.planets ?? [];
   const army = s?.army;

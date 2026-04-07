@@ -6,11 +6,13 @@
 
 import { prisma } from "./prisma";
 import { processAction, type ActionType, type TurnReport } from "./game-engine";
-import { generatePlanetName, START, PLANET_CONFIG, UNIT_COST } from "./game-constants";
+import { generatePlanetName, START, PLANET_CONFIG, UNIT_COST, MAINT } from "./game-constants";
 import { getAvailableTech } from "./research";
 import * as rng from "./rng";
 import { setSeed } from "./rng";
 import type { PlanetType, Prisma } from "@prisma/client";
+import { empireFromPrisma, type PrismaEmpireShape } from "./sim-state";
+import { searchOpponentMove, buildSearchStates } from "./search-opponent";
 
 export type EmpireForStrategySim = Prisma.EmpireGetPayload<{
   include: { planets: true; army: true; research: true; supplyRates: true };
@@ -45,7 +47,9 @@ export type SimStrategy =
   | "random"
   | "research_rush"
   | "credit_leverage"
-  | "growth_focus";
+  | "growth_focus"
+  | "mcts"
+  | "maxn";
 
 /** Default roster when `strategies` is omitted (one per player, cycling). */
 export const DEFAULT_SIM_STRATEGIES: SimStrategy[] = [
@@ -225,13 +229,43 @@ function pickAction(strategy: SimStrategy, ctx: StrategyContext, turn: number): 
       return creditLeverageStrategy(ctx, turn);
     case "growth_focus":
       return growthFocusStrategy(ctx, turn);
+    case "mcts":
+    case "maxn":
+      // Search strategies require full empire data — fall back to balanced when
+      // called via the legacy StrategyContext-only path (e.g. orphan sim without shapes).
+      return balancedStrategy(ctx, turn);
     case "balanced":
     default:
       return balancedStrategy(ctx, turn);
   }
 }
 
-export function pickSimAction(strategy: SimStrategy, ctx: StrategyContext, turn: number) {
+export function pickSimAction(strategy: SimStrategy, ctx: StrategyContext, turn: number): { action: ActionType; params: Record<string, unknown> };
+export function pickSimAction(
+  strategy: SimStrategy,
+  ctx: StrategyContext,
+  turn: number,
+  empireShape?: PrismaEmpireShape,
+  rivalShapes?: PrismaEmpireShape[],
+): { action: ActionType; params: Record<string, unknown> };
+export function pickSimAction(
+  strategy: SimStrategy,
+  ctx: StrategyContext,
+  turn: number,
+  empireShape?: PrismaEmpireShape,
+  rivalShapes?: PrismaEmpireShape[],
+): { action: ActionType; params: Record<string, unknown> } {
+  if ((strategy === "mcts" || strategy === "maxn") && empireShape) {
+    const selfState = empireFromPrisma(empireShape);
+    const rivalStates = (rivalShapes ?? []).map((r) => empireFromPrisma(r));
+    const { states, playerIdx } = buildSearchStates(selfState, rivalStates);
+    const move = searchOpponentMove(states, playerIdx, {
+      strategy,
+      mcts: { seed: rng.getSeed() ?? undefined },
+      maxn: { seed: rng.getSeed() ?? undefined },
+    });
+    return { action: move.action, params: move.params };
+  }
   return pickAction(strategy, ctx, turn);
 }
 
@@ -367,7 +401,7 @@ function turtleStrategy(ctx: StrategyContext, turn: number): { action: ActionTyp
   const tourIncome = countType(ctx, "TOURISM") * 7500;
   const urbIncome  = countType(ctx, "URBAN")   * 1200 + Math.floor(ctx.population * ctx.taxRate * 0.002);
   const incomeEst  = oreIncome + tourIncome + urbIncome;
-  const stationMaint = ctx.defenseStations * 40;  // MAINT.STATION = 40 cr/station/turn
+  const stationMaint = ctx.defenseStations * MAINT.STATION;
   const freeIncome   = Math.max(0, incomeEst - stationMaint);
 
   // Economy foundation — ore and tourism are the money-makers; food/urban sustain population.
@@ -380,7 +414,7 @@ function turtleStrategy(ctx: StrategyContext, turn: number): { action: ActionTyp
   // Mass station purchases: spend most of credits when income can sustain the maintenance.
   // Buy in large batches — the whole point of the turtle is a massive station wall.
   if (freeIncome >= 10000 && ctx.credits >= 26000) {
-    const sustainable = Math.floor(freeIncome / 40);                                      // how many more we can afford to maintain
+    const sustainable = Math.floor(freeIncome / MAINT.STATION);                          // how many more we can afford to maintain
     const affordable  = Math.floor(ctx.credits * 0.75 / UNIT_COST.DEFENSE_STATION);      // spend 75% of credits
     const buyCount    = Math.min(sustainable, affordable, 2000);                          // hard cap so one action isn't absurd
     if (buyCount >= 5) return { action: "buy_stations", params: { amount: buyCount } };
@@ -466,17 +500,35 @@ function researchStrategy(ctx: StrategyContext, turn: number): { action: ActionT
 function creditLeverageStrategy(ctx: StrategyContext, turn: number): { action: ActionType; params: Record<string, unknown> } {
   if (turn === 0) return { action: "set_sell_rates", params: { foodSellRate: 0, oreSellRate: 52, petroleumSellRate: 52 } };
   if (turn === 1 && ctx.taxRate > 22) return { action: "set_tax_rate", params: { rate: 22 } };
+  // Take loans early to front-load planet purchases; interest is low enough to be worth it
   if (ctx.activeLoanCount < 3 && ctx.credits < 130000 && turn >= 2 && turn < 28) {
     return { action: "bank_loan", params: { amount: 100000 } };
   }
 
+  // Core planet foundation (funded by loans)
   if (countType(ctx, "URBAN") < 5 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "URBAN" } };
   if (countType(ctx, "ORE") < 5 && ctx.credits >= 10000) return { action: "buy_planet", params: { type: "ORE" } };
   if (countType(ctx, "TOURISM") < 3 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "TOURISM" } };
   if (countType(ctx, "FOOD") < 4 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "FOOD" } };
   if (countType(ctx, "GOVERNMENT") < 2 && ctx.credits >= 12000) return { action: "buy_planet", params: { type: "GOVERNMENT" } };
-  if (ctx.lightCruisers < 18 && ctx.credits >= 9500 && turn > 35) return { action: "buy_light_cruisers", params: { amount: 10 } };
-  if (turn > 65 && ctx.soldiers > 100) return { action: "attack_pirates", params: {} };
+  // Petroleum: 1 planet covers fuel for LCs and fighters indefinitely
+  if (countType(ctx, "PETROLEUM") < 1 && ctx.credits >= 20000) return { action: "buy_planet", params: { type: "PETROLEUM" } };
+
+  // First military wave (once loans start clearing)
+  if (ctx.lightCruisers < 20 && ctx.credits >= 9500 && turn > 35) return { action: "buy_light_cruisers", params: { amount: 10 } };
+  if (ctx.soldiers < 200 && ctx.credits >= 5600 && turn > 35) return { action: "buy_soldiers", params: { amount: 20 } };
+
+  // Late-game: reinvest surplus into more income planets and military for ongoing NW compounding
+  if (turn > 50 && ctx.activeLoanCount === 0) {
+    if (countType(ctx, "ORE")     < 8 && ctx.credits >= 10000) return { action: "buy_planet", params: { type: "ORE" } };
+    if (countType(ctx, "TOURISM") < 5 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "TOURISM" } };
+    if (countType(ctx, "URBAN")   < 8 && ctx.credits >= 14000) return { action: "buy_planet", params: { type: "URBAN" } };
+    if (ctx.lightCruisers < 50 && ctx.credits >= 9500) return { action: "buy_light_cruisers", params: { amount: 10 } };
+    if (ctx.soldiers < 600 && ctx.credits >= 11200) return { action: "buy_soldiers", params: { amount: 40 } };
+    if (ctx.fighters < 40 && ctx.credits >= 7600) return { action: "buy_fighters", params: { amount: 20 } };
+  }
+
+  if (turn > 40 && ctx.soldiers > 100) return { action: "attack_pirates", params: {} };
   return { action: "end_turn", params: {} };
 }
 
@@ -616,7 +668,13 @@ export async function runSimulation(config: SimConfig): Promise<SimResult> {
 
       const ctx = strategyContextFromEmpire(empire, activeLoanCount);
 
-      const { action, params } = pickAction(p.strategy, ctx, turn);
+      const { action, params } = pickSimAction(
+        p.strategy,
+        ctx,
+        turn,
+        (p.strategy === "mcts" || p.strategy === "maxn") ? (empire as unknown as PrismaEmpireShape) : undefined,
+        undefined, // orphan sim has no session rivals
+      );
 
       const result = await processAction(p.playerId, action, params);
 
