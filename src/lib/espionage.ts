@@ -67,7 +67,7 @@ async function executeInsurgentAid(defenderEmpireId: string, defender: DefenderE
 }
 
 async function executeSupportDissension(defender: DefenderEmpire): Promise<OpResult> {
-  const deserters = Math.floor(defender.army!.soldiers * 0.05);
+  const deserters = Math.floor(defender.army!.soldiers * 0.10);
   await prisma.army.update({
     where: { id: defender.army!.id },
     data: { soldiers: { decrement: deserters } },
@@ -91,7 +91,7 @@ async function executeDemoralizeTroops(defender: DefenderEmpire): Promise<OpResu
 }
 
 async function executeBombing(defenderEmpireId: string, defender: DefenderEmpire): Promise<OpResult> {
-  const foodDestroyed = Math.floor(defender.food * 0.20);
+  const foodDestroyed = Math.floor(defender.food * 0.30);
   await prisma.empire.update({
     where: { id: defenderEmpireId },
     data: { food: { decrement: foodDestroyed } },
@@ -118,7 +118,7 @@ async function executeRelationsSpying(defenderEmpireId: string): Promise<OpResul
 }
 
 async function executeTakeHostages(defenderEmpireId: string, defender: DefenderEmpire): Promise<OpResult> {
-  const ransom = Math.floor(defender.credits * 0.05);
+  const ransom = Math.floor(defender.credits * 0.10);
   await prisma.empire.update({ where: { id: defenderEmpireId }, data: { credits: { decrement: ransom } } });
   return {
     messages: [`Take Hostages: Ransomed ${ransom.toLocaleString()} credits from target.`],

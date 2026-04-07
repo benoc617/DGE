@@ -19,7 +19,7 @@ export const PLANET_CONFIG: Record<
   EDUCATION:      { label: "Education",      baseCost: 14000, baseProduction: 100, desc: "Linear immigration growth" },
   GOVERNMENT:     { label: "Government",     baseCost: 12000, baseProduction: 100, desc: "Reduces maintenance; houses agents" },
   SUPPLY:         { label: "Supply",         baseCost: 20000, baseProduction: 100, desc: "Auto-produces military units" },
-  RESEARCH:       { label: "Research",       baseCost: 25000, baseProduction: 300, desc: "Generates research points" },
+  RESEARCH:       { label: "Research",       baseCost: 20000, baseProduction: 500, desc: "Generates research points" },
   ANTI_POLLUTION: { label: "Anti-Pollution", baseCost: 18000, baseProduction: 100, desc: "Absorbs pollution from petroleum" },
 };
 
@@ -95,7 +95,7 @@ export const UNIT_COST = {
   LIGHT_CRUISER: 950,
   HEAVY_CRUISER: 1900,
   CARRIER: 1430,
-  COVERT_AGENT: 4090,
+  COVERT_AGENT: 2000,
   COMMAND_SHIP: 20000,
 } as const;
 
@@ -129,9 +129,10 @@ export const FINANCE = {
 
 // --- Pollution ---
 export const POLLUTION = {
-  PER_PETRO_PLANET: 0.1,
+  PER_PETRO_PLANET: 0.25,   // was 0.1 — each petroleum planet now has real bite; 2 planets need 1 anti-pollution to offset
   PER_PERSON: 0.000002,
   ANTI_POLLUTION_ABSORPTION: 0.5,
+  WARN_RATIO: 0.4,           // pollutionRatio threshold for a visible warning event
 } as const;
 
 // --- Combat ---

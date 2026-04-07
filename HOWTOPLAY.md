@@ -145,13 +145,13 @@ The left panel shows your empire status in a **compact grid layout**: Net Worth 
   - **Food** — Feeds population and soldiers. You need these or everyone starves.
   - **Ore** — Feeds mechanical military units. Can sell excess.
   - **Tourism** — High credit income but fragile in wartime.
-  - **Petroleum** — Produces fuel but causes pollution. Pair with Anti-Pollution.
+  - **Petroleum** — Produces fuel and decent credit income, but generates serious pollution. Every 2 petroleum planets requires ~1 anti-pollution planet to offset. Watch for the **POLLUTION ALERT** in your situation report.
   - **Urban** — Each supports 20,000 population and generates urban tax. Critical for growth.
   - **Education** — Brings +400 immigrants per planet per turn.
   - **Government** — Reduces maintenance costs. Required for generals (50 cap/planet) and covert agents (300 cap/planet).
-  - **Supply** — Auto-produces military units each turn based on your allocation.
-  - **Research** — Base cost 25,000 cr (before inflation). Generates research points (300/turn) and light cruisers.
-  - **Anti-Pollution** — Absorbs pollution from petroleum planets.
+  - **Supply** — Auto-produces military units each turn based on your allocation. Even 1 supply planet delivers passive output — units arrive without spending an action turn.
+  - **Research** — Cost 20,000 cr (before inflation). Generates 500 RP/turn and light cruisers.
+  - **Anti-Pollution** — Absorbs pollution. Each anti-pollution planet neutralizes ~2 petroleum planets' worth of contamination.
 - **Set Tax Rate** — Higher taxes = more income but less population growth. 20–35% is safe for growth; 40–60% for income; above 60% and people flee.
 - **Set Sell Rates** — Percentage of produced food/ore/petroleum auto-sold each turn.
 
@@ -199,16 +199,16 @@ Requires covert agents and covert points (regenerate +5/turn, max 50).
 |-----------|--------|-------------|
 | Spy | 0 | Reveals target's resources, army, planets |
 | Insurgent Aid | 1 | Worsens target's civil status |
-| Support Dissension | 1 | 5% of target's soldiers desert |
+| Support Dissension | 1 | **10%** of target's soldiers desert |
 | Demoralize Troops | 1 | Reduces target's effectiveness |
-| Bombing Operations | 1 | Destroys 20% of target's food |
+| Bombing Operations | 1 | Destroys **30%** of target's food |
 | Relations Spying | 0 | Reveals target's treaties |
-| Take Hostages | 1 | Steals 5% of target's credits |
+| Take Hostages | 1 | Steals **10%** of target's credits |
 | Carrier Sabotage | 1 | Destroys 10% of target's carriers |
 | Communications Spying | 1 | Reveals target's last 5 actions |
 | Setup Coup | 2 | Civil status +2 AND effectiveness -15% |
 
-Your agents can be detected and killed. More agents = higher success rate. Government planets house more agents.
+Covert agents cost 2,000 credits each. Your agents can be detected and killed. More agents = higher success rate. Government planets house more agents (300 per planet).
 
 ### 5. MKT (Galactic Market)
 
@@ -227,7 +227,7 @@ Research planets generate 300 points/turn. Spend points to unlock technologies a
 - **Society** — Population growth, civil stability, income bonuses (8K–20K RP)
 - **Deep Space** — Light cruiser upgrades, research speed boost (35K–120K RP)
 
-With one research planet you'll accumulate ~15,000 RP over 50 turns — enough for entry-level techs. Two or three research planets lets you unlock mid-tier upgrades by end-game. Tier 2 military unlocks (60K–120K RP) require a dedicated research strategy.
+Research planets cost 20,000 credits and produce 500 RP/turn. With one research planet you'll accumulate ~25,000 RP over 50 turns — enough for two entry-level techs. Two or three research planets lets you unlock several mid-tier upgrades by end-game. Tier 2 military unlocks (60K–120K RP) require a dedicated research strategy.
 
 **Priority techs:** Military unit upgrades make the biggest difference in combat. A Tier 2 soldier is 2× stronger on ground than Tier 0.
 

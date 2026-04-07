@@ -263,12 +263,14 @@ emigration = alterNumber(round(emigOvercrowd + emigTax + emigCivil), 5%)
 **Pollution calculation:**
 
 ```
-pollutionFromPetro = floor(petroPlanets / 100 × avgPetroProd) × 0.1
+pollutionFromPetro = floor(petroPlanets / 100 × avgPetroProd) × 0.25
 pollutionFromPop = population × 0.000002
 totalPollution = pollutionFromPetro + pollutionFromPop
 antipollution = antiPollutionPlanets × 0.5 × (avgAntiPollutionProd / 100)
 pollutionRatio = totalPollution / max(1, antipollution)
 ```
+
+A **POLLUTION ALERT** event fires in the situation report when `pollutionRatio ≥ 0.4`. Each petroleum planet generates 0.25 pollution; 2 petroleum planets require ~1 anti-pollution planet to offset (0.5 absorption cancels 0.5 pollution).
 
 ### Step 10: Civil Status
 
@@ -368,7 +370,7 @@ Supply planets automatically produce military units based on `SupplyRates` alloc
 
 ```
 rawProd = sum(supplyPlanet.shortTermProduction) / 100
-effProd = (rawProd + random × rawProd / 16) / 100
+effProd = (rawProd + random × rawProd / 16) / 10
 unitsProduced = floor(rate% × effProd × floor(8000 / unitCost))
 ```
 
@@ -416,7 +418,7 @@ One action per turn. Each action is processed after the turn tick.
 | EDUCATION | 14,000 | 100 | Linear immigration (+400/planet) |
 | GOVERNMENT | 12,000 | 100 | Reduces maintenance, houses generals + covert agents |
 | SUPPLY | 20,000 | 100 | Auto-produces military units |
-| RESEARCH | 25,000 | 300 | Generates research points (300/turn) + light cruisers |
+| RESEARCH | 20,000 | 500 | Generates research points (500/turn) + light cruisers |
 | ANTI_POLLUTION | 18,000 | 100 | Absorbs pollution from petroleum |
 
 #### `set_tax_rate`
@@ -446,7 +448,7 @@ One action per turn. Each action is processed after the turn tick.
 | Light Cruiser | 950 | None (also produced by Research planets) |
 | Heavy Cruiser | 1,900 | None |
 | Carrier | 1,430 | None |
-| Covert Agent | 4,090 | Max `govPlanets × 300` |
+| Covert Agent | 2,000 | Max `govPlanets × 300` |
 
 #### `buy_command_ship`
 - Cost: 20,000 credits
@@ -498,11 +500,11 @@ One action per turn. Each action is processed after the turn tick.
 |----|------|--------|-------------------|
 | 0 | Spy | 0 | Reveals target's credits, pop, planets, army (±15% accuracy) |
 | 1 | Insurgent Aid | 1 | Target civil status +1 |
-| 2 | Support Dissension | 1 | 5% of target's soldiers desert |
+| 2 | Support Dissension | 1 | 10% of target's soldiers desert |
 | 3 | Demoralize Troops | 1 | Target effectiveness -5 to -15% |
-| 4 | Bombing Operations | 1 | Destroy 20% of target's food |
+| 4 | Bombing Operations | 1 | Destroy 30% of target's food |
 | 5 | Relations Spying | 0 | Reveals target's active treaties |
-| 6 | Take Hostages | 1 | Steal 5% of target's credits |
+| 6 | Take Hostages | 1 | Steal 10% of target's credits |
 | 7 | Carrier Sabotage | 1 | Destroy 10% of target's carriers (min 1) |
 | 8 | Communications Spying | 1 | Reveals target's last 5 actions |
 | 9 | Setup Coup | 2 | Target civil status +2, effectiveness -15% |

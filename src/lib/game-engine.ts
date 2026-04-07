@@ -357,6 +357,9 @@ export async function processTurnTick(
   const antiPolluProd = avgShortTermProd(planets, "ANTI_POLLUTION");
   const antipollution = antiPolluPlanets * POLLUTION.ANTI_POLLUTION_ABSORPTION * (antiPolluProd / 100);
   const pollutionRatio = totalPollution / Math.max(1, antipollution);
+  if (pollutionRatio >= POLLUTION.WARN_RATIO && totalPollution > 0) {
+    events.push(`POLLUTION ALERT: Contamination is suppressing population growth and accelerating deaths (severity ${(pollutionRatio * 100).toFixed(0)}%). Build anti-pollution planets to counter.`);
+  }
 
   // Births
   const bornPrime = empire.population * POP.BIRTH_RATE;
@@ -401,6 +404,7 @@ export async function processTurnTick(
   let newSoldiers = army.soldiers;
   let newGenerals = army.generals;
   let newFighters = army.fighters;
+  let newDefenseStations = army.defenseStations;
   let newLightCruisers = army.lightCruisers;
   let newHeavyCruisers = army.heavyCruisers;
   let newCarriers = army.carriers;
@@ -538,7 +542,9 @@ export async function processTurnTick(
     const supplyPlanets = planets.filter((p) => p.type === "SUPPLY");
     if (supplyPlanets.length > 0) {
       const rawProd = supplyPlanets.reduce((s, p) => s + p.shortTermProduction, 0) / 100;
-      const effProd = (rawProd + rng.random() * rawProd / 16) / 100;
+      // Divide by 10 (not 100) so 1 supply planet at full production yields ~1–2 units/turn
+      // at 100% allocation of the cheapest types. Was /100 — zero output for <7 planets.
+      const effProd = (rawProd + rng.random() * rawProd / 16) / 10;
 
       const prodSoldiers = Math.floor(supplyRates.rateSoldier / 100 * effProd * Math.floor(8000 / UNIT_COST.SOLDIER));
       const prodFighters = Math.floor(supplyRates.rateFighter / 100 * effProd * Math.floor(8000 / UNIT_COST.FIGHTER));
@@ -551,6 +557,7 @@ export async function processTurnTick(
 
       newSoldiers += prodSoldiers;
       newFighters += prodFighters;
+      newDefenseStations += prodStations;
       newHeavyCruisers += prodHC;
       newCarriers += prodCarriers;
       newGenerals += prodGenerals;
@@ -665,7 +672,7 @@ export async function processTurnTick(
       soldiers: newSoldiers,
       generals: newGenerals,
       fighters: newFighters,
-      defenseStations: army.defenseStations + (supplyRates ? Math.floor(supplyRates.rateStation / 100 * ((planets.filter(p => p.type === "SUPPLY").reduce((s, p) => s + p.shortTermProduction, 0) / 100 + 0) / 100) * Math.floor(8000 / UNIT_COST.DEFENSE_STATION)) : 0),
+      defenseStations: newDefenseStations,
       lightCruisers: newLightCruisers,
       heavyCruisers: newHeavyCruisers,
       carriers: newCarriers,
