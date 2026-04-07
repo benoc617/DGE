@@ -1,5 +1,11 @@
 import { prisma } from "@/lib/prisma";
-import { getAIMove, AI_PERSONAS, computeRivalAttackTargets, type AIMoveContext } from "@/lib/gemini";
+import {
+  getAIMove,
+  AI_PERSONAS,
+  computeRivalAttackTargets,
+  shouldLogAiTiming,
+  type AIMoveContext,
+} from "@/lib/gemini";
 import { processAction, runAndPersistTick, type ActionType } from "@/lib/game-engine";
 import { processAiMoveOrSkip } from "@/lib/ai-process-move";
 import { getCurrentTurn, advanceTurn } from "@/lib/turn-order";
@@ -152,26 +158,47 @@ async function runOneAI(playerId: string, playerName: string, persona: string | 
   const gameSessionId = player.gameSessionId;
 
   try {
+    const tTurn0 = performance.now();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const { ctx, eventStrings, empireState } = await buildAIMoveContext(player as any);
+    const contextMs = performance.now() - tTurn0;
 
+    const tMove0 = performance.now();
     const move = await getAIMove(
       persona ?? AI_PERSONAS.economist,
       empireState,
       eventStrings,
       ctx,
     );
+    const getAIMoveMs = performance.now() - tMove0;
 
     const llmSource = move.llmSource;
 
     const params = paramsFromAIMove(move);
 
+    const tExec0 = performance.now();
     const { finalResult, skipped, invalidMessage } = await processAiMoveOrSkip(
       playerId,
       move.action as ActionType,
       params,
       { llmSource, aiReasoning: move.reasoning },
     );
+    const executeMs = performance.now() - tExec0;
+
+    if (shouldLogAiTiming()) {
+      console.info(
+        "[srx-ai]",
+        JSON.stringify({
+          event: "runOneAI",
+          commander: playerName,
+          contextMs: Math.round(contextMs),
+          getAIMoveMs: Math.round(getAIMoveMs),
+          executeMs: Math.round(executeMs),
+          totalMs: Math.round(performance.now() - tTurn0),
+          llmSource: move.llmSource,
+        }),
+      );
+    }
 
     const displayMessage =
       finalResult.success && skipped && invalidMessage
