@@ -1,7 +1,11 @@
 import { getDb } from "@/lib/db-context";
 import { runAndPersistTick, processAction, runEndgameSettlementTick, type TurnReport } from "@/lib/game-engine";
-import { getAIMoveDecision } from "@/lib/ai-runner";
+import {
+  getAIMoveDecision,
+  type DoorGameAIMoveDecision,
+} from "@/lib/ai-runner";
 import { processAiMoveOrSkip } from "@/lib/ai-process-move";
+import { parsePositiveInt } from "@/lib/ai-concurrency";
 
 /** Options for `processAction` during a door-game full turn (after tick is persisted). */
 export const doorActionOpts = {
@@ -35,7 +39,23 @@ export function isSessionRoundTimedOut(
 }
 
 /** Wall-clock cap per AI door-game move (Gemini can hang; fallback path should stay fast). */
-const DOOR_AI_MOVE_TIMEOUT_MS = 60_000;
+export const DOOR_AI_MOVE_TIMEOUT_MS = 60_000;
+
+/** When `1`/`true`, door-game AI drain overlaps `getAIMoveDecision` in batches; applies stay serial. */
+export function isDoorAiParallelDecideEnabled(): boolean {
+  const v = process.env.DOOR_AI_PARALLEL_DECIDE;
+  return v === "1" || v === "true" || v === "yes";
+}
+
+/** Max AIs per wave when parallel decide is on (default 4, clamped 1–128). */
+export function getDoorAiDecideBatchMax(): number {
+  return Math.min(128, Math.max(1, parsePositiveInt(process.env.DOOR_AI_DECIDE_BATCH_MAX, 4)));
+}
+
+function shouldLogDoorWave(): boolean {
+  const v = process.env.DOOR_AI_LOG_WAVE;
+  return v === "1" || v === "true" || process.env.SRX_LOG_AI_TIMING === "1" || process.env.SRX_LOG_AI_TIMING === "true";
+}
 
 /**
  * True when the skip-path bug left an empire with turnOpen set but the last logged action was end_turn
@@ -224,11 +244,14 @@ export async function tryRollRound(
   });
   if (!session2) return false;
 
-  const active = session2.players.filter((p) => p.empire);
+  const active = session2.players.filter(
+    (p: (typeof session2.players)[number]) => p.empire,
+  );
   if (active.length === 0) return false;
 
   const allDone = active.every(
-    (p) => (p.empire!.fullTurnsUsedThisRound ?? 0) >= session2.actionsPerDay,
+    (p: (typeof active)[number]) =>
+      (p.empire!.fullTurnsUsedThisRound ?? 0) >= session2.actionsPerDay,
   );
 
   if (!allDone) {
@@ -274,31 +297,29 @@ export async function tryRollRound(
   return true;
 }
 
-async function runOneDoorGameAI(playerId: string): Promise<void> {
-  const player = await getDb().player.findUnique({
-    where: { id: playerId },
-    include: { empire: true, gameSession: true },
-  });
-  if (!player?.empire || !player.gameSessionId || !player.gameSession) return;
-  const sessionId = player.gameSessionId;
-  const actionsPerDay = player.gameSession.actionsPerDay;
-
-  if (!canPlayerAct(player.empire, actionsPerDay)) return;
-
-  if (!player.empire.turnOpen) {
-    await openFullTurn(playerId);
-  }
-
-  let move: Awaited<ReturnType<typeof getAIMoveDecision>>;
+/**
+ * Run `getAIMoveDecision` with the same wall-clock cap as the serial path.
+ */
+export async function decideDoorGameAIMove(playerId: string): Promise<DoorGameAIMoveDecision> {
   try {
-    move = await Promise.race([
+    return await Promise.race([
       getAIMoveDecision(playerId),
       new Promise<null>((resolve) => setTimeout(() => resolve(null), DOOR_AI_MOVE_TIMEOUT_MS)),
     ]);
   } catch (err) {
     console.error("[door-game] getAIMoveDecision failed", playerId, err);
-    move = null;
+    return null;
   }
+}
+
+/**
+ * Persist the chosen move (or timeout/skip) and close the door-game full turn.
+ */
+export async function applyDoorGameAIMove(
+  playerId: string,
+  move: DoorGameAIMoveDecision,
+  sessionId: string,
+): Promise<void> {
   if (!move) {
     await processAction(playerId, "end_turn", undefined, doorEndTurnOpts);
     await closeFullTurn(playerId, sessionId);
@@ -347,6 +368,47 @@ async function runOneDoorGameAI(playerId: string): Promise<void> {
   }
 }
 
+/**
+ * Ensure tick is open and `turnOpen` is set so `getAIMoveDecision` is valid.
+ */
+export async function ensureDoorGameFullTurnOpen(playerId: string): Promise<boolean> {
+  const player = await getDb().player.findUnique({
+    where: { id: playerId },
+    include: { empire: true, gameSession: true },
+  });
+  if (!player?.empire || !player.gameSession) return false;
+  const apd = player.gameSession.actionsPerDay;
+  if (!canPlayerAct(player.empire, apd)) return false;
+  if (!player.empire.turnOpen) {
+    await openFullTurn(playerId);
+  }
+  const again = await getDb().player.findUnique({
+    where: { id: playerId },
+    include: { empire: true, gameSession: true },
+  });
+  if (!again?.empire?.turnOpen || !canPlayerAct(again.empire, apd)) return false;
+  return true;
+}
+
+async function runOneDoorGameAI(playerId: string): Promise<void> {
+  const player = await getDb().player.findUnique({
+    where: { id: playerId },
+    include: { empire: true, gameSession: true },
+  });
+  if (!player?.empire || !player.gameSessionId || !player.gameSession) return;
+  const sessionId = player.gameSessionId;
+  const actionsPerDay = player.gameSession.actionsPerDay;
+
+  if (!canPlayerAct(player.empire, actionsPerDay)) return;
+
+  if (!player.empire.turnOpen) {
+    await openFullTurn(playerId);
+  }
+
+  const move = await decideDoorGameAIMove(playerId);
+  await applyDoorGameAIMove(playerId, move, sessionId);
+}
+
 /** Serialize concurrent runs per session (status kick + action `after()` may overlap). */
 const doorAiInFlight = new Map<string, Promise<void>>();
 
@@ -362,10 +424,73 @@ async function drainDoorGameAiTurns(sessionId: string): Promise<void> {
   });
   if (!session || session.turnMode !== "simultaneous" || session.waitingForHuman) return;
 
+  const parallelDecide = isDoorAiParallelDecideEnabled();
+  const batchMax = getDoorAiDecideBatchMax();
+
   let guard = 0;
   while (guard++ < 500) {
     await tryRollRound(sessionId);
 
+    if (parallelDecide) {
+      const batch = await getDb().player.findMany({
+        where: {
+          gameSessionId: sessionId,
+          isAI: true,
+          empire: {
+            turnsLeft: { gt: 0 },
+            fullTurnsUsedThisRound: { lt: session.actionsPerDay },
+          },
+        },
+        orderBy: [
+          { empire: { fullTurnsUsedThisRound: "asc" } },
+          { turnOrder: "asc" },
+        ],
+        take: batchMax,
+        include: { empire: true },
+      });
+
+      if (batch.length === 0) break;
+
+      const ready: string[] = [];
+      for (const p of batch) {
+        const ok = await ensureDoorGameFullTurnOpen(p.id);
+        if (ok) ready.push(p.id);
+      }
+
+      if (ready.length === 0) {
+        await runOneDoorGameAI(batch[0].id);
+        continue;
+      }
+
+      const tDecide0 = performance.now();
+      const decisions = await Promise.all(ready.map((id) => decideDoorGameAIMove(id)));
+      const parallelDecideMs = performance.now() - tDecide0;
+
+      const tApply0 = performance.now();
+      for (let i = 0; i < ready.length; i++) {
+        await applyDoorGameAIMove(ready[i], decisions[i], sessionId);
+      }
+      const serialApplyMs = performance.now() - tApply0;
+
+      if (shouldLogDoorWave()) {
+        console.info(
+          "[door-game]",
+          JSON.stringify({
+            event: "doorWave",
+            sessionId,
+            parallelDecide: true,
+            batchSize: ready.length,
+            parallelDecideMs: Math.round(parallelDecideMs),
+            serialApplyMs: Math.round(serialApplyMs),
+          }),
+        );
+      }
+      continue;
+    }
+
+    // Fair scheduling for simultaneous play: prefer empires who have used *fewer* daily slots this
+    // round, then break ties by turnOrder. Strict turnOrder-only ordering starved high turnOrder
+    // AIs (e.g. Rey after a slow Optimal AI ahead in the list).
     const next = await getDb().player.findFirst({
       where: {
         gameSessionId: sessionId,
@@ -375,7 +500,10 @@ async function drainDoorGameAiTurns(sessionId: string): Promise<void> {
           fullTurnsUsedThisRound: { lt: session.actionsPerDay },
         },
       },
-      orderBy: { turnOrder: "asc" },
+      orderBy: [
+        { empire: { fullTurnsUsedThisRound: "asc" } },
+        { turnOrder: "asc" },
+      ],
       include: { empire: true },
     });
 

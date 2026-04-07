@@ -8,7 +8,6 @@ import EventLog from "@/components/EventLog";
 import Leaderboard from "@/components/Leaderboard";
 import { classifyTurnEvents } from "@/lib/critical-events";
 import { AUTH, SESSION } from "@/lib/game-constants";
-import { validatePasswordStrength } from "@/lib/auth";
 import { apiFetch } from "@/lib/client-fetch";
 
 interface HubGame {
@@ -342,9 +341,8 @@ export default function Home() {
       setError("Sign in required.");
       return;
     }
-    const _pwErr = !loginPassword ? "Password required" : validatePasswordStrength(loginPassword);
-    if (_pwErr) {
-      setError(_pwErr);
+    if (!loginPassword.trim()) {
+      setError("Password required");
       return;
     }
     setLoading(true);
@@ -435,9 +433,8 @@ export default function Home() {
       setError("Sign in required.");
       return;
     }
-    const _pwErr = !loginPassword ? "Password required" : validatePasswordStrength(loginPassword);
-    if (_pwErr) {
-      setError(_pwErr);
+    if (!loginPassword.trim()) {
+      setError("Password required");
       return;
     }
     setLoading(true);

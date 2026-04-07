@@ -32,5 +32,5 @@ echo "[srx] prisma generate + db push…"
 npx prisma generate
 npx prisma db push
 
-echo "[srx] starting Next.js dev server on 0.0.0.0:${PORT} (user: $(whoami))…"
-exec npm run dev -- --hostname 0.0.0.0 --port "${PORT}"
+echo "[srx] starting Next.js dev server (webpack) on 0.0.0.0:${PORT} (user: $(whoami))…"
+exec npm run dev:webpack -- --hostname 0.0.0.0 --port "${PORT}"

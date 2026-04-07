@@ -143,6 +143,9 @@ export async function getAIMoveDecision(playerId: string): Promise<{
   };
 }
 
+/** Resolved move from `getAIMoveDecision` (null = timeout / load failure). */
+export type DoorGameAIMoveDecision = Awaited<ReturnType<typeof getAIMoveDecision>>;
+
 /**
  * Run a single AI player's turn: get their decision and execute it.
  */

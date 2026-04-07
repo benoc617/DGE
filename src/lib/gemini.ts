@@ -5,6 +5,7 @@ import * as rng from "@/lib/rng";
 import { empireFromPrisma, makeRng, type PrismaEmpireShape } from "@/lib/sim-state";
 import { searchOpponentMove, buildSearchStates } from "@/lib/search-opponent";
 import { getAvailableTech } from "@/lib/research";
+import { withGeminiGeneration, withMctsDecide } from "@/lib/ai-concurrency";
 
 const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
 
@@ -408,7 +409,7 @@ Respond ONLY with valid JSON:
 
   // Optimal persona always uses the in-house MCTS algorithm — never calls Gemini.
   if (persona.includes("Optimal") || persona.includes("optimal")) {
-    const out = runFallback();
+    const out = await withMctsDecide(async () => runFallback());
     logGetAIMoveTiming({
       totalMs: performance.now() - tStart,
       configMs: 0,
@@ -438,9 +439,11 @@ Respond ONLY with valid JSON:
   try {
     const model = new GoogleGenerativeAI(geminiCfg.apiKey).getGenerativeModel({ model: geminiCfg.model });
     const tGen0 = performance.now();
-    const result = await model.generateContent(prompt, {
-      timeout: getGeminiRequestTimeoutMs(),
-    });
+    const result = await withGeminiGeneration(async () =>
+      model.generateContent(prompt, {
+        timeout: getGeminiRequestTimeoutMs(),
+      }),
+    );
     const generateMs = performance.now() - tGen0;
     const text = result.response.text().trim();
     const json = text.replace(/^```(?:json)?\n?/, "").replace(/\n?```$/, "");

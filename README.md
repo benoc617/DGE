@@ -13,6 +13,10 @@ Runs **PostgreSQL** and the **Next.js dev server** in containers. Source code is
 cat > .env <<EOF
 GEMINI_API_KEY="your-key-here"
 GEMINI_MODEL="gemini-2.5-flash"
+# GEMINI_MAX_CONCURRENT="4"           # cap concurrent Gemini API calls (global)
+# DOOR_AI_MAX_CONCURRENT_MCTS="1"     # cap concurrent Optimal/MCTS in getAIMove
+# DOOR_AI_PARALLEL_DECIDE="0"         # 1 = overlap door-game AI decisions in batches (apply stays serial)
+# DOOR_AI_DECIDE_BATCH_MAX="4"        # max AIs per wave when parallel decide is on
 # NEXT_DISABLE_DEV_INDICATOR="true"   # hide Next.js bottom-left dev indicator (restart required)
 # ADMIN_USERNAME="admin"
 # INITIAL_ADMIN_PASSWORD="srxpass"
@@ -45,6 +49,8 @@ cat > .env <<EOF
 DATABASE_URL="postgresql://postgres:postgres@localhost:5432/srx"
 GEMINI_API_KEY="your-key-here"
 GEMINI_MODEL="gemini-2.5-flash"
+# GEMINI_MAX_CONCURRENT="4"
+# DOOR_AI_PARALLEL_DECIDE="0"
 # NEXT_DISABLE_DEV_INDICATOR="true"
 EOF
 
@@ -218,7 +224,7 @@ npm run docker:test:all    # Unit then E2E in container
 
 **Host scripts** (`npm test`, `npm run test:e2e` on :3005, etc.) are for **CI** (Linux + clean `npm ci`) or explicit local use — **not** for automation against this repo’s Docker workflow.
 
-**E2E:** Prefer **`npm run docker:test:e2e`**. The host script `test:e2e` uses [start-server-and-test](https://github.com/bahmutov/start-server-and-test) to boot `next dev` on **127.0.0.1:3005** — conflicts with Docker’s `next dev` on :3000. **`docker:test:e2e`** runs `test:e2e:only` inside `app` with `TEST_BASE_URL=http://127.0.0.1:3000`. Run `prisma db push` so the schema matches the Prisma client.
+**E2E:** Prefer **`npm run docker:test:e2e`**. The host script `test:e2e` uses [start-server-and-test](https://github.com/bahmutov/start-server-and-test) to boot `next dev` on **127.0.0.1:3005** — conflicts with Docker’s `next dev` on :3000. **`docker:test:e2e`** runs `test:e2e:only` inside `app` with `TEST_BASE_URL=http://127.0.0.1:3000`. Run `prisma db push` so the schema matches the Prisma client. To exercise **parallel door-game AI decide** (`DOOR_AI_PARALLEL_DECIDE=1`) in E2E, set that variable in `.env` before `docker compose up` (same semantics as serial; mainly for performance / regression checks).
 
 **Door-game repair (stuck “waiting for others” after a bad AI skip):** with `DATABASE_URL` set (e.g. `localhost:5433` to Compose Postgres), run `npm run repair:door-session -- --galaxy "Your Galaxy" --dry-run` to list empires where `turnOpen` is still true but the last `TurnLog` action is `end_turn`; then `--apply` to run `closeFullTurn` for each. Or `--apply --player "Commander Name"` with optional `--force` if you must close an open turn manually.
 

@@ -183,4 +183,43 @@ describe("door-game simultaneous mode", () => {
     expect(humanTp).toBe(ACTIONS_PER_DAY);
     expect(aiTp).toBeGreaterThanOrEqual(ACTIONS_PER_DAY);
   }, 180_000);
+
+  it("two AI opponents: calendar day rolls and both AIs advance (multi-AI drain)", async () => {
+    const g = uniqueGalaxy("DoorAI2");
+    const humanName = uniqueName("DoorHum2");
+    const password = TEST_PASSWORD;
+
+    const r1 = await register(humanName, password, { galaxyName: g, turnMode: "simultaneous" });
+    expect(r1.status).toBe(201);
+    const p1Id = (r1.data as { id?: string }).id!;
+    const sessionId = (r1.data as { gameSessionId?: string }).gameSessionId!;
+    scheduleTestGalaxyDeletion(sessionId);
+
+    const aiA = "Sleve McDichael";
+    const aiB = "Onson Sweemey";
+    const aiRes = await setupAI([aiA, aiB], sessionId);
+    expect(aiRes.status).toBe(200);
+
+    await completeDoorDaySlots(humanName);
+
+    const fin = await pollStatusUntil(
+      p1Id,
+      (d) =>
+        d.dayNumber === 2 &&
+        (d.empire as { turnsLeft?: number } | undefined)?.turnsLeft === START.TURNS - ACTIONS_PER_DAY,
+      { timeoutMs: 120_000, intervalMs: 400 },
+    );
+    expect(fin.dayNumber).toBe(2);
+    expect((fin.empire as { turnsLeft?: number }).turnsLeft).toBe(START.TURNS - ACTIONS_PER_DAY);
+
+    const lb = await getLeaderboard(humanName);
+    expect(lb.status).toBe(200);
+    const rows = (lb.data as { leaderboard?: { name: string; turnsPlayed?: number }[] }).leaderboard ?? [];
+    const rowA = rows.find((x) => x.name === aiA);
+    const rowB = rows.find((x) => x.name === aiB);
+    expect(rowA).toBeDefined();
+    expect(rowB).toBeDefined();
+    expect((rowA as { turnsPlayed?: number }).turnsPlayed ?? 0).toBeGreaterThanOrEqual(ACTIONS_PER_DAY);
+    expect((rowB as { turnsPlayed?: number }).turnsPlayed ?? 0).toBeGreaterThanOrEqual(ACTIONS_PER_DAY);
+  }, 180_000);
 });

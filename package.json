@@ -6,6 +6,7 @@
     "postinstall": "node scripts/fix-tsc-bin.js && prisma generate",
     "typecheck": "node ./node_modules/typescript/lib/tsc.js --noEmit",
     "dev": "next dev",
+    "dev:webpack": "next dev --webpack",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",

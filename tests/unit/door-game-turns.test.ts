@@ -3,8 +3,15 @@ import {
   canPlayerAct,
   isStuckDoorTurnAfterSkipEndLog,
   isSessionRoundTimedOut,
+  DOOR_AI_MOVE_TIMEOUT_MS,
 } from "@/lib/door-game-turns";
 import { hashSessionIdToBigInt } from "@/lib/db-context";
+
+describe("DOOR_AI_MOVE_TIMEOUT_MS", () => {
+  it("matches door-game AI decide race cap (60s)", () => {
+    expect(DOOR_AI_MOVE_TIMEOUT_MS).toBe(60_000);
+  });
+});
 
 describe("canPlayerAct", () => {
   it("is true when turns remain and daily full turns not exhausted", () => {

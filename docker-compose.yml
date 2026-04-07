@@ -26,6 +26,7 @@ services:
       context: .
       dockerfile: Dockerfile.dev
       sbom: true
+    restart: unless-stopped
     ports:
       - "3000:3000"
     environment:
