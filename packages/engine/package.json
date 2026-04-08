@@ -9,7 +9,9 @@
     "./redis": "./src/redis.ts",
     "./cache": "./src/cache.ts",
     "./db-context": "./src/db-context.ts",
-    "./search": "./src/search.ts"
+    "./search": "./src/search.ts",
+    "./turn-order": "./src/turn-order.ts",
+    "./door-game": "./src/door-game.ts"
   },
   "dependencies": {
     "@dge/shared": "*"

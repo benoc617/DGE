@@ -27,6 +27,8 @@
       "@dge/engine/cache": ["./packages/engine/src/cache.ts"],
       "@dge/engine/db-context": ["./packages/engine/src/db-context.ts"],
       "@dge/engine/search": ["./packages/engine/src/search.ts"],
+      "@dge/engine/turn-order": ["./packages/engine/src/turn-order.ts"],
+      "@dge/engine/door-game": ["./packages/engine/src/door-game.ts"],
       "@dge/engine/*": ["./packages/engine/src/*"],
       "@dge/shell": ["./packages/shell/src/index.ts"],
       "@dge/shell/*": ["./packages/shell/src/*"],

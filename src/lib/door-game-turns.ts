@@ -1,3 +1,23 @@
+/**
+ * SRX — door-game turns shim.
+ *
+ * Re-exports engine door-game functions, injecting SRX-specific hooks
+ * (runAndPersistTick, runEndgameSettlementTick, enqueueAiTurnsForSession,
+ * cache invalidation) so that API routes and the ai-worker call the same
+ * signatures as before.
+ *
+ * SRX-specific door-game functions (AI move dispatch, auto-close TurnLog)
+ * remain here and call through to engine functions with hooks.
+ */
+
+import {
+  canPlayerAct,
+  openFullTurn as _openFullTurn,
+  closeFullTurn as _closeFullTurn,
+  tryRollRound as _tryRollRound,
+  type DoorGameHooks,
+} from "@dge/engine/door-game";
+
 import { getDb } from "@/lib/db-context";
 import { runAndPersistTick, processAction, runEndgameSettlementTick, type TurnReport } from "@/lib/game-engine";
 import { invalidatePlayer, invalidateLeaderboard } from "@/lib/game-state-service";
@@ -9,11 +29,28 @@ import {
 import { processAiMoveOrSkip } from "@/lib/ai-process-move";
 import { resolveDoorAiRuntimeSettings } from "@/lib/door-ai-runtime-settings";
 
-/** Default door-game AI caps when no DB row (matches prior constants; configurable via admin / env). */
+// ---------------------------------------------------------------------------
+// Pure utilities — re-exported directly from engine
+// ---------------------------------------------------------------------------
+
+export {
+  canPlayerAct,
+  isSessionRoundTimedOut,
+  isStuckDoorTurnAfterSkipEndLog,
+} from "@dge/engine/door-game";
+
+// ---------------------------------------------------------------------------
+// Re-exported constants from sub-modules
+// ---------------------------------------------------------------------------
+
 export {
   DEFAULT_DOOR_AI_MOVE_TIMEOUT_MS as DOOR_AI_MOVE_TIMEOUT_MS,
   DEFAULT_DOOR_AI_DECIDE_BATCH_SIZE as DOOR_AI_DECIDE_BATCH_SIZE,
 } from "@/lib/door-ai-runtime-settings";
+
+// ---------------------------------------------------------------------------
+// Door-game processAction option sets (SRX-specific)
+// ---------------------------------------------------------------------------
 
 /** Options for `processAction` during a door-game full turn (after tick is persisted). */
 export const doorActionOpts = {
@@ -29,114 +66,77 @@ export const doorEndTurnOpts = {
   skipEndgameSettlement: true as const,
 };
 
-export function canPlayerAct(
-  empire: { turnsLeft: number; fullTurnsUsedThisRound: number },
-  actionsPerDay: number,
-): boolean {
-  return empire.turnsLeft > 0 && empire.fullTurnsUsedThisRound < actionsPerDay;
+// ---------------------------------------------------------------------------
+// SRX hook factory
+// ---------------------------------------------------------------------------
+
+function makeSrxHooks(options?: { scheduleAiDrain?: boolean }): DoorGameHooks {
+  return {
+    async runTick(playerId, opts) {
+      return runAndPersistTick(playerId, opts);
+    },
+    async runEndgameTick(playerId) {
+      await runEndgameSettlementTick(playerId);
+    },
+    invalidatePlayer(playerId) {
+      void invalidatePlayer(playerId);
+    },
+    invalidateLeaderboard(sessionId) {
+      void invalidateLeaderboard(sessionId);
+    },
+    onDayComplete(sessionId) {
+      if (options?.scheduleAiDrain !== false) {
+        void enqueueAiTurnsForSession(sessionId).catch((err) => {
+          console.error("[door-game] enqueueAiTurnsForSession after day roll", sessionId, err);
+        });
+      }
+    },
+  };
 }
 
-/** True when `roundStartedAt + turnTimeoutSecs` has passed (door-game round deadline). */
-export function isSessionRoundTimedOut(
-  roundStartedAt: Date | null,
-  turnTimeoutSecs: number,
-  nowMs: number = Date.now(),
-): boolean {
-  if (!roundStartedAt) return false;
-  return nowMs >= roundStartedAt.getTime() + turnTimeoutSecs * 1000;
-}
-
-/**
- * True when the skip-path bug left an empire with turnOpen set, the last logged action was end_turn,
- * and closeFullTurn never ran (tick still "unprocessed" for the open slot).
- *
- * **Not** stuck: after a normal close, `POST /tick` opens the next full turn (`turnOpen` true,
- * `tickProcessed` true) but the newest TurnLog row may still be the previous full turn's `end_turn`
- * until the player acts — that is valid; do not repair.
- */
-export function isStuckDoorTurnAfterSkipEndLog(
-  turnOpen: boolean,
-  lastTurnLogAction: string | null | undefined,
-  tickProcessed: boolean | undefined,
-): boolean {
-  return turnOpen === true && lastTurnLogAction === "end_turn" && tickProcessed === false;
-}
+// ---------------------------------------------------------------------------
+// Engine wrappers with SRX hooks
+// ---------------------------------------------------------------------------
 
 /**
  * Run economy tick for a new full turn and mark the empire as mid-turn (`turnOpen`).
  */
 export async function openFullTurn(playerId: string): Promise<TurnReport | null> {
-  const player = await getDb().player.findUnique({
-    where: { id: playerId },
-    include: { empire: true },
-  });
-  if (!player?.empire || player.empire.turnsLeft < 1) return null;
-  if (player.empire.turnOpen) {
-    return null;
-  }
-
-  if (player.empire.tickProcessed) {
-    await getDb().empire.update({
-      where: { id: player.empire.id },
-      data: { turnOpen: true },
-    });
-    return null;
-  }
-
-  const report = await runAndPersistTick(playerId, { decrementTurnsLeft: false });
-  if (!report) return null;
-
-  await getDb().empire.update({
-    where: { id: player.empire.id },
-    data: { turnOpen: true },
-  });
-
-  return report;
+  return _openFullTurn(playerId, makeSrxHooks()) as Promise<TurnReport | null>;
 }
 
 /**
- * After `end_turn` processAction: close the full turn, count it for the round, decrement `turnsLeft`
- * (one game turn per full turn / miniturn), maybe roll the calendar day.
+ * After `end_turn` processAction: close the full turn, count it for the round,
+ * decrement `turnsLeft`, maybe roll the calendar day.
  */
 export async function closeFullTurn(
   playerId: string,
   sessionId: string,
   options?: { scheduleAiDrain?: boolean },
 ): Promise<void> {
-  try {
-    const result = await getDb().empire.updateMany({
-      where: { playerId, turnsLeft: { gt: 0 } },
-      data: {
-        turnOpen: false,
-        tickProcessed: false,
-        fullTurnsUsedThisRound: { increment: 1 },
-        turnsLeft: { decrement: 1 },
-      },
-    });
-    if (result.count === 0) {
-      throw new Error(`closeFullTurn: no empire updated for playerId=${playerId} (missing or turnsLeft<=0)`);
-    }
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    throw new Error(`closeFullTurn: failed to update empire for playerId=${playerId}: ${msg}`);
-  }
-
-  const empAfter = await getDb().empire.findUnique({
-    where: { playerId },
-    select: { turnsLeft: true },
-  });
-  if (empAfter?.turnsLeft === 0) {
-    await runEndgameSettlementTick(playerId);
-  }
-
-  void invalidatePlayer(playerId);
-  await tryRollRound(sessionId, options);
+  return _closeFullTurn(playerId, sessionId, makeSrxHooks(options));
 }
 
 /**
- * After a successful mutating action (not `end_turn`), append the same TurnLog row `end_turn` would
- * and close the full turn — matches core SRE rule of one economy action per full turn without
- * requiring a separate Skip / end_turn request.
+ * When every active empire has used all full turns for the round (or the round
+ * deadline passed), advance the calendar day.
+ *
+ * @returns true if a roll occurred
+ */
+export async function tryRollRound(
+  sessionId: string,
+  options?: { scheduleAiDrain?: boolean },
+): Promise<boolean> {
+  return _tryRollRound(sessionId, makeSrxHooks(options));
+}
+
+// ---------------------------------------------------------------------------
+// SRX-specific door-game functions (not extracted to engine)
+// ---------------------------------------------------------------------------
+
+/**
+ * After a successful mutating action (not `end_turn`), append an end_turn
+ * TurnLog row and close the full turn.
  */
 export async function doorGameAutoCloseFullTurnAfterAction(
   playerId: string,
@@ -155,141 +155,6 @@ export async function doorGameAutoCloseFullTurnAfterAction(
     },
   });
   await closeFullTurn(playerId, sessionId, options);
-}
-
-/**
- * When every active empire has used all full turns for the round (or the round deadline passed),
- * advance the calendar day. `turnsLeft` is consumed per full turn in `closeFullTurn`, not here.
- * Round deadline: `roundStartedAt` + `turnTimeoutSecs` (default 24h) — remaining daily slots are
- * skipped (forfeit) for everyone still short; each forfeited slot also consumes one `turnsLeft`
- * (same as if the player had closed that full turn).
- * @param options.scheduleAiDrain — set `false` for headless session sims (default `true` matches HTTP routes).
- * @returns true if a roll occurred
- */
-export async function tryRollRound(
-  sessionId: string,
-  options?: { scheduleAiDrain?: boolean },
-): Promise<boolean> {
-  const session = await getDb().gameSession.findUnique({
-    where: { id: sessionId },
-    include: {
-      players: {
-        where: { empire: { turnsLeft: { gt: 0 } } },
-        include: { empire: true },
-      },
-    },
-  });
-
-  if (!session || session.turnMode !== "simultaneous" || session.waitingForHuman) {
-    return false;
-  }
-
-  const apd = session.actionsPerDay;
-
-  if (isSessionRoundTimedOut(session.roundStartedAt, session.turnTimeoutSecs)) {
-    const db = getDb();
-    const stuck = await db.empire.findMany({
-      where: {
-        player: { gameSessionId: sessionId },
-        turnsLeft: { gt: 0 },
-        fullTurnsUsedThisRound: { lt: apd },
-      },
-      select: { id: true, playerId: true, fullTurnsUsedThisRound: true, turnsLeft: true },
-    });
-    let forgivenCount = 0;
-    for (const emp of stuck) {
-      const used = emp.fullTurnsUsedThisRound ?? 0;
-      const slotsLeft = apd - used;
-      if (slotsLeft <= 0) continue;
-      const newTurnsLeft = Math.max(0, emp.turnsLeft - slotsLeft);
-      await db.empire.update({
-        where: { id: emp.id },
-        data: {
-          fullTurnsUsedThisRound: apd,
-          turnOpen: false,
-          tickProcessed: false,
-          turnsLeft: newTurnsLeft,
-        },
-      });
-      if (newTurnsLeft === 0) {
-        await runEndgameSettlementTick(emp.playerId);
-      }
-      forgivenCount++;
-    }
-    if (forgivenCount > 0) {
-      await db.gameEvent.create({
-        data: {
-          gameSessionId: sessionId,
-          type: "round_timeout",
-          message: `Calendar day ${session.dayNumber}: round timer — remaining full turns skipped (${forgivenCount} empires).`,
-          details: { empireCount: forgivenCount, dayNumber: session.dayNumber } as object,
-        },
-      });
-    }
-  }
-
-  const session2 = await getDb().gameSession.findUnique({
-    where: { id: sessionId },
-    include: {
-      players: {
-        where: { empire: { turnsLeft: { gt: 0 } } },
-        include: { empire: true },
-      },
-    },
-  });
-  if (!session2) return false;
-
-  const active = session2.players.filter(
-    (p: (typeof session2.players)[number]) => p.empire,
-  );
-  if (active.length === 0) return false;
-
-  const allDone = active.every(
-    (p: (typeof active)[number]) =>
-      (p.empire!.fullTurnsUsedThisRound ?? 0) >= session2.actionsPerDay,
-  );
-
-  if (!allDone) {
-    return false;
-  }
-
-  const db = getDb();
-  await db.empire.updateMany({
-    where: { player: { gameSessionId: sessionId } },
-    data: {
-      fullTurnsUsedThisRound: 0,
-      tickProcessed: false,
-      turnOpen: false,
-    },
-  });
-
-  await db.gameSession.update({
-    where: { id: sessionId },
-    data: {
-      dayNumber: session2.dayNumber + 1,
-      roundStartedAt: new Date(),
-    },
-  });
-
-  await db.gameEvent.create({
-    data: {
-      gameSessionId: sessionId,
-      type: "day_complete",
-      message: `Calendar day ${session2.dayNumber} complete — day ${session2.dayNumber + 1} begins.`,
-      details: { previousDay: session2.dayNumber } as object,
-    },
-  });
-
-  // New calendar day: enqueue AI turn jobs — the ai-worker process claims and runs them.
-  // This is fire-and-forget; the web process never blocks on AI work.
-  if (options?.scheduleAiDrain !== false) {
-    void enqueueAiTurnsForSession(sessionId).catch((err) => {
-      console.error("[door-game] enqueueAiTurnsForSession after day roll", sessionId, err);
-    });
-  }
-
-  void invalidateLeaderboard(sessionId);
-  return true;
 }
 
 /**
@@ -314,8 +179,8 @@ export async function decideDoorGameAIMove(
 
 /**
  * Persist the chosen move (or timeout/skip) and close the door-game full turn.
- * Pass `{ scheduleAiDrain: false }` when called from the ai-worker to prevent re-enqueueing
- * (the worker handles cascading itself after each job completes).
+ * Pass `{ scheduleAiDrain: false }` when called from the ai-worker to prevent
+ * re-enqueueing (the worker handles cascading itself after each job completes).
  */
 export async function applyDoorGameAIMove(
   playerId: string,
@@ -396,8 +261,6 @@ export async function ensureDoorGameFullTurnOpen(playerId: string): Promise<bool
 /**
  * Run a single door-game AI turn: open the full turn slot, pick a move, apply it, and close.
  * Exported so the ai-worker process can call this directly after claiming a job.
- * Pass `{ scheduleAiDrain: false }` from the worker to prevent re-enqueueing inside
- * closeFullTurn/tryRollRound — the worker handles cascading after each job completes.
  */
 export async function runOneDoorGameAI(
   playerId: string,
