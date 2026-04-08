@@ -78,7 +78,13 @@ const srxSearchFunctions: SearchGameFunctions<SrxSearchState> = {
 
   applyAction(state, playerIdx, action, params, rng) {
     const rivals = makeRivalViews(state.empires, playerIdx);
-    const result = srxApplyAction(state.empires[playerIdx], action, params, rivals, rng);
+    const result = srxApplyAction(
+      state.empires[playerIdx],
+      action as Parameters<typeof srxApplyAction>[1],
+      params,
+      rivals,
+      rng,
+    );
 
     // Merge rival state changes back into the world state.
     const empires = state.empires.map((e, i) => {

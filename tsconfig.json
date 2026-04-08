@@ -29,7 +29,9 @@
       "@dge/engine/search": ["./packages/engine/src/search.ts"],
       "@dge/engine/*": ["./packages/engine/src/*"],
       "@dge/shell": ["./packages/shell/src/index.ts"],
-      "@dge/shell/*": ["./packages/shell/src/*"]
+      "@dge/shell/*": ["./packages/shell/src/*"],
+      "@dge/srx": ["./games/srx/src/index.ts"],
+      "@dge/srx/*": ["./games/srx/src/*"]
     }
   },
   "include": [

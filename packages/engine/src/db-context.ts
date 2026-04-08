@@ -6,10 +6,11 @@
  */
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { PrismaClient } from "@prisma/client";
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type TxClient = any; // Prisma.TransactionClient — avoid importing full Prisma types
 
-const txStore = new AsyncLocalStorage<TxClient>();
+// The transaction client (returned inside $transaction callbacks) has the same
+// model API as PrismaClient. We store it as unknown and cast to PrismaClient
+// on reads — callers inside a lock should never call $transaction / $connect.
+const txStore = new AsyncLocalStorage<unknown>();
 
 let _prisma: PrismaClient | null = null;
 
@@ -29,8 +30,18 @@ function getPrisma(): PrismaClient {
  * Use this everywhere instead of importing prisma directly so that
  * all DB work within a lock shares the same transaction connection.
  */
-export function getDb(): PrismaClient | TxClient {
-  return txStore.getStore() ?? getPrisma();
+/**
+ * Returns the transaction client if inside a withCommitLock callback,
+ * otherwise returns the root prisma client.
+ * Use this everywhere instead of importing prisma directly so that
+ * all DB work within a lock shares the same transaction connection.
+ *
+ * The cast to PrismaClient is safe: the transaction client has the same
+ * model operations. Only $transaction/$connect/$disconnect are absent, and
+ * callers inside a lock must not nest transactions anyway.
+ */
+export function getDb(): PrismaClient {
+  return (txStore.getStore() ?? getPrisma()) as PrismaClient;
 }
 
 /**
@@ -81,7 +92,7 @@ export async function withCommitLock<T>(sessionId: string, fn: () => Promise<T>)
         if (isMysqlLockError(e)) throw new GalaxyBusyError();
         throw e;
       }
-      return txStore.run(tx as TxClient, fn);
+      return txStore.run(tx, fn);
     },
     { timeout: 60_000 },
   );
