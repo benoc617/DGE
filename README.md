@@ -1,12 +1,12 @@
 # Solar Realms Extreme (SRX)
 
-A turn-based galactic empire management game — a modern reimagining of the BBS-era classic [Solar Realms Elite](https://breakintochat.com/wiki/Solar_Realms_Elite). Built with Next.js, Prisma, and MySQL, styled with a monochrome terminal/BBS aesthetic.
+A turn-based galactic empire management game — a modern reimagining of the BBS-era classic [Solar Realms Elite](https://breakintochat.com/wiki/Solar_Realms_Elite). Built with Next.js, Prisma, MySQL, and Redis, styled with a monochrome terminal/BBS aesthetic.
 
 ## Quick Start
 
 ### Option A — Docker Compose (recommended)
 
-Runs **MySQL** and the **Next.js dev server** in containers. The app **image** includes a copy of the repo at build time — there is **no bind mount**. After you change code, run **`npm run deploy`** (or **`npm run docker:dev:redeploy`**) so Docker rebuilds the image and recreates the app container.
+Runs **MySQL**, **Redis**, the **Next.js app server**, and the **AI worker** in containers. The app **image** includes a copy of the repo at build time — there is **no bind mount**. After you change code, run **`npm run deploy`** (or **`npm run docker:dev:redeploy`**) so Docker rebuilds the image and recreates the app and ai-worker containers.
 
 ```bash
 # Optional: API keys and admin overrides (DATABASE_URL is set inside Compose for the app)
@@ -31,6 +31,8 @@ docker compose up --build
 
 - **App:** [http://localhost:3000](http://localhost:3000) — Operators: [http://localhost:3000/admin](http://localhost:3000/admin) · [http://localhost:3000/admin/users](http://localhost:3000/admin/users) (accounts)
 - **MySQL on the host:** `localhost:3306` (user `srx`, password `srx`, database `srx`) — use this in `DATABASE_URL` if you run **Prisma CLI on the host** (`db push`, `studio`) against the same database.
+- **Redis on the host:** `localhost:6379` — short-lived player and leaderboard read cache (fail-open; MySQL is always authoritative).
+- The **ai-worker** container polls the `AiTurnJob` MySQL table and executes AI turns for simultaneous-mode sessions concurrently with the app server.
 - On startup the **app** container runs `prisma db push` (sync schema to DB). No migration files — schema changes go directly to `schema.prisma` and are pushed.
 - To seed **SystemSettings** from your `.env` into the DB (for `/admin` overrides): **`docker compose exec app npm run seed:system-settings`** (recommended; matches the app container). Alternative on the host: `DATABASE_URL="mysql://srx:srx@localhost:3306/srx" npm run seed:system-settings`
 
@@ -131,10 +133,11 @@ Preset strategies (default roster cycles one per simulated player): `balanced`, 
 | Next.js 16 (App Router) | UI and API routes |
 | Prisma 7 + `@prisma/adapter-mariadb` | MySQL ORM |
 | Google Gemini (2.5 Flash default) | AI opponent decisions |
+| Redis 7 | Player + leaderboard read cache (fail-open) |
 | TypeScript | Entire codebase |
 | Tailwind CSS | Terminal/BBS aesthetic |
 | Vitest | Unit + E2E test suite |
-| tsx | Simulation CLI runner |
+| tsx | Simulation CLI runner + AI worker |
 
 ## Project Structure
 
@@ -180,9 +183,12 @@ src/
     db-context.ts                    # AsyncLocalStorage DB context + advisory lock for door-game
     door-game-turns.ts               # Simultaneous turn mechanics (open/close/rollRound/AI drain)
     door-game-ui.ts                  # Client rule for Command Center disabled vs canAct/turnOpen
-    delete-game-session.ts           # Session + player cascade cleanup
+    delete-game-session.ts           # Session + player cascade cleanup (includes AiTurnJob + SessionLock)
     system-settings.ts               # SystemSettings (Gemini key masking for admin API)
     door-ai-runtime-settings.ts      # Door-game AI caps (DB + env), semaphore refresh; short TTL cache
+    redis.ts                         # ioredis client; fail-open helpers (rGet, rSetEx, rDel)
+    game-state-service.ts            # Player/leaderboard cache-aside (getCachedPlayer, invalidatePlayer, …)
+    ai-job-queue.ts                  # AiTurnJob CRUD: enqueue, claim (SKIP LOCKED), complete, fail, recoverStale
     ui-tooltips.ts                   # Tooltip text for Galactic Powers, Empire Status, Command Center
     critical-events.ts               # Situation-report event tiers (critical / warning / info)
 tests/
@@ -191,6 +197,7 @@ tests/
   vitest.e2e.config.ts               # E2E config: sequential files, `tests/e2e` only
 scripts/
   deploy-docker-dev.sh               # docker compose build app + up -d (pick up code changes)
+  ai-worker.ts                       # Standalone AI turn worker (separate Compose service; polls AiTurnJob)
   simulate.ts                        # CLI runner for simulations
   fix-tsc-bin.js                     # postinstall: repair broken node_modules/.bin/tsc symlink
   docker-entrypoint-dev.sh           # Compose app entry: prisma generate, db push, next dev
@@ -198,7 +205,7 @@ scripts/
 prisma/
   schema.prisma                      # Database schema
 Dockerfile.dev                       # Dev image: npm ci, COPY repo, prisma generate; no runtime bind mount
-docker-compose.yml                   # MySQL + Next.js (app source baked into image; MySQL data volume only)
+docker-compose.yml                   # MySQL + Redis + Next.js app + AI worker (source baked into image; MySQL data volume only)
 .dockerignore                        # Build context exclusions
 ```
 

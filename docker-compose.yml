@@ -1,6 +1,6 @@
-# Local development: MySQL + pre-built Next.js app (`next start`). Source is baked into the
-# image at build time (no bind mount). Pick up code changes: `npm run deploy`.
-# App: http://localhost:3000  ·  DB: localhost:3306 (srx / srx / srx)
+# Local development: MySQL + Redis + pre-built Next.js app (`next start`) + AI worker.
+# Source is baked into the image at build time (no bind mount). Pick up code changes: `npm run deploy`.
+# App: http://localhost:3000  ·  DB: localhost:3306 (srx / srx / srx)  ·  Redis: localhost:6379
 
 services:
   redis:
