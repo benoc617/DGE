@@ -51,7 +51,7 @@ export default function EventLog({ events }: { events: string[] }) {
         {events.map((e, i) => (
           <p
             key={i}
-            className={`text-xs leading-relaxed whitespace-pre ${classifyLine(e)}`}
+            className={`text-xs leading-relaxed whitespace-pre-wrap break-words ${classifyLine(e)}`}
           >
             {e}
           </p>

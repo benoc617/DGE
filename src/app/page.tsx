@@ -1760,7 +1760,7 @@ function TurnSummaryModal({ data, onClose }: { data: TurnPopupData; onClose: () 
               ⚠ CRITICAL ALERTS ⚠
             </div>
             {classified.critical.map((ev, i) => (
-              <div key={i} className="text-red-300 text-center py-0.5 font-bold">
+              <div key={i} className="text-red-300 text-center py-0.5 font-bold break-words">
                 {ev}
               </div>
             ))}
@@ -1948,13 +1948,13 @@ function TurnSummaryModal({ data, onClose }: { data: TurnPopupData; onClose: () 
           <div className="mt-3 pt-2 border-t border-green-900">
             <div className="text-yellow-400 font-bold mb-1">{data.mode === "intel_report" ? "INTELLIGENCE" : "EVENTS"}</div>
             {classified.critical.map((ev, i) => (
-              <div key={`c${i}`} className="text-red-400 font-bold py-0.5">⚠ {ev}</div>
+              <div key={`c${i}`} className="text-red-400 font-bold py-0.5 break-words">⚠ {ev}</div>
             ))}
             {classified.warnings.map((ev, i) => (
-              <div key={`w${i}`} className="text-yellow-300 py-0.5">⚡ {ev}</div>
+              <div key={`w${i}`} className="text-yellow-300 py-0.5 break-words">⚡ {ev}</div>
             ))}
             {classified.info.map((ev, i) => (
-              <div key={`i${i}`} className="text-green-500 py-0.5">● {ev}</div>
+              <div key={`i${i}`} className="text-green-500 py-0.5 break-words">● {ev}</div>
             ))}
           </div>
         )}

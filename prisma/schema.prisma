@@ -279,7 +279,7 @@ model GameEvent {
   gameSessionId String?
   gameSession   GameSession?  @relation(fields: [gameSessionId], references: [id])
   type          String
-  message       String
+  message       String        @db.Text
   details       Json?
   createdAt     DateTime      @default(now())
 }
