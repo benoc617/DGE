@@ -1,0 +1,88 @@
+/**
+ * @dge/engine — Transaction context and session advisory locking.
+ *
+ * Call registerPrismaClient(prisma) once at app startup before using
+ * withCommitLock or getDb.
+ */
+import { AsyncLocalStorage } from "node:async_hooks";
+import type { PrismaClient } from "@prisma/client";
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type TxClient = any; // Prisma.TransactionClient — avoid importing full Prisma types
+
+const txStore = new AsyncLocalStorage<TxClient>();
+
+let _prisma: PrismaClient | null = null;
+
+/** Register the Prisma client instance. Call once at app startup. */
+export function registerPrismaClient(client: PrismaClient): void {
+  _prisma = client;
+}
+
+function getPrisma(): PrismaClient {
+  if (!_prisma) throw new Error("[dge] Prisma client not registered. Call registerPrismaClient() at startup.");
+  return _prisma;
+}
+
+/**
+ * Returns the transaction client if inside a withCommitLock callback,
+ * otherwise returns the root prisma client.
+ * Use this everywhere instead of importing prisma directly so that
+ * all DB work within a lock shares the same transaction connection.
+ */
+export function getDb(): PrismaClient | TxClient {
+  return txStore.getStore() ?? getPrisma();
+}
+
+/**
+ * Run fn with getDb() guaranteed to return the root prisma client,
+ * escaping any active transaction context.
+ */
+export function runOutsideTransaction<T>(fn: () => T): T {
+  return txStore.exit(fn);
+}
+
+export class GalaxyBusyError extends Error {
+  constructor(message = "Galaxy busy — retry.") {
+    super(message);
+    this.name = "GalaxyBusyError";
+  }
+}
+
+/**
+ * Detect MySQL/MariaDB lock errors from NOWAIT (MySQL error 3572).
+ */
+function isMysqlLockError(e: unknown): boolean {
+  if (!(e instanceof Error)) return false;
+  const msg = e.message;
+  if (msg.includes("lock(s) could not be acquired immediately") || msg.includes("NOWAIT")) return true;
+  const err = e as Error & { errno?: number; meta?: { errno?: number } };
+  if (err.errno === 3572 || err.meta?.errno === 3572) return true;
+  return false;
+}
+
+/**
+ * Serialize mutating requests per game session with a try-lock (no indefinite wait).
+ * Uses SELECT ... FOR UPDATE NOWAIT on a SessionLock row.
+ * The lock is transaction-scoped and released automatically on commit or rollback.
+ * All DB work in fn must go through getDb() to share the transaction connection.
+ */
+export async function withCommitLock<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
+  const prisma = getPrisma();
+  return prisma.$transaction(
+    async (tx) => {
+      await tx.$executeRaw`
+        INSERT IGNORE INTO SessionLock (sessionId, lockedAt) VALUES (${sessionId}, NOW())
+      `;
+      try {
+        await tx.$queryRaw<{ sessionId: string }[]>`
+          SELECT sessionId FROM SessionLock WHERE sessionId = ${sessionId} FOR UPDATE NOWAIT
+        `;
+      } catch (e) {
+        if (isMysqlLockError(e)) throw new GalaxyBusyError();
+        throw e;
+      }
+      return txStore.run(tx as TxClient, fn);
+    },
+    { timeout: 60_000 },
+  );
+}

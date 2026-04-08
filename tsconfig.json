@@ -23,6 +23,9 @@
       "@dge/shared": ["./packages/shared/src/index.ts"],
       "@dge/shared/*": ["./packages/shared/src/*"],
       "@dge/engine": ["./packages/engine/src/index.ts"],
+      "@dge/engine/redis": ["./packages/engine/src/redis.ts"],
+      "@dge/engine/cache": ["./packages/engine/src/cache.ts"],
+      "@dge/engine/db-context": ["./packages/engine/src/db-context.ts"],
       "@dge/engine/*": ["./packages/engine/src/*"],
       "@dge/shell": ["./packages/shell/src/index.ts"],
       "@dge/shell/*": ["./packages/shell/src/*"]
