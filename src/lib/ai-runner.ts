@@ -1,3 +1,11 @@
+/**
+ * SRX — AI runner shim.
+ *
+ * Keeps SRX-specific AI orchestration (buildAIMoveContext, runOneAI,
+ * getAIMoveDecision) and wraps the engine's generic runAISequence with
+ * SRX-specific hooks (SRX getCurrentTurn/advanceTurn shims + runOneAI).
+ */
+
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import {
@@ -11,6 +19,7 @@ import {
 import { processAction, runAndPersistTick, type ActionType } from "@/lib/game-engine";
 import { processAiMoveOrSkip } from "@/lib/ai-process-move";
 import { getCurrentTurn, advanceTurn } from "@/lib/turn-order";
+import { runAISequence as _runAISequence } from "@dge/engine/ai-runner";
 
 const PLAYER_WITH_EMPIRE = {
   empire: { include: { planets: true, army: true, supplyRates: true, research: true } },
@@ -113,8 +122,7 @@ async function buildAIMoveContext(player: PlayerWithEmpireForAI) {
 }
 
 /**
- * Pick an AI move without running a tick or persisting (used by door-game AI loop between ticks).
- * Empire state should reflect the end of the previous resolved slot.
+ * Pick an AI move without running a tick or persisting (used by door-game AI loop).
  */
 export async function getAIMoveDecision(playerId: string): Promise<{
   action: ActionType;
@@ -130,18 +138,11 @@ export async function getAIMoveDecision(playerId: string): Promise<{
 
   const { ctx, eventStrings, empireState } = await buildAIMoveContext(player as PlayerWithEmpireForAI);
 
-  // aiPersona is stored as a persona KEY (e.g. "economist"), not the full prompt text.
-  // Look it up in AI_PERSONAS; fall back to economist if unset or unrecognised.
   const personaPrompt =
     (player.aiPersona && AI_PERSONAS[player.aiPersona as keyof typeof AI_PERSONAS]) ||
     AI_PERSONAS.economist;
 
-  const move = await getAIMove(
-    personaPrompt,
-    empireState,
-    eventStrings,
-    ctx,
-  );
+  const move = await getAIMove(personaPrompt, empireState, eventStrings, ctx);
 
   return {
     action: move.action as ActionType,
@@ -155,10 +156,13 @@ export async function getAIMoveDecision(playerId: string): Promise<{
 export type DoorGameAIMoveDecision = Awaited<ReturnType<typeof getAIMoveDecision>>;
 
 /**
- * Run a single AI player's turn: get their decision and execute it.
+ * Run a single AI player's turn: tick, pick move, execute, log.
  */
-async function runOneAI(playerId: string, playerName: string, personaKeyOrPrompt: string | null) {
-  // aiPersona is stored as a KEY (e.g. "economist"). Expand to full prompt; fall back to economist.
+async function runOneAI(
+  playerId: string,
+  playerName: string,
+  personaKeyOrPrompt: string | null,
+): Promise<{ action: string; message: string }> {
   const persona =
     (personaKeyOrPrompt && AI_PERSONAS[personaKeyOrPrompt as keyof typeof AI_PERSONAS]) ||
     AI_PERSONAS.economist;
@@ -171,7 +175,7 @@ async function runOneAI(playerId: string, playerName: string, personaKeyOrPrompt
   });
 
   if (!player?.empire || player.empire.turnsLeft < 1) {
-    return { name: playerName, action: "skip", success: false, message: "No turns left" };
+    return { action: "skip", message: "No turns left" };
   }
 
   const gameSessionId = player.gameSessionId;
@@ -182,30 +186,19 @@ async function runOneAI(playerId: string, playerName: string, personaKeyOrPrompt
     const contextMs = performance.now() - tTurn0;
 
     const tMove0 = performance.now();
-    const move = await getAIMove(
-      persona,
-      empireState,
-      eventStrings,
-      ctx,
-    );
+    const move = await getAIMove(persona, empireState, eventStrings, ctx);
     const getAIMoveMs = performance.now() - tMove0;
 
     const llmSource = move.llmSource;
-
     const params = paramsFromAIMove(move);
 
     const tExec0 = performance.now();
-    /** Written to TurnLog before `processAction` completes — omit execute/total wall (unknown until after). */
     const logMeta = {
       llmSource,
       aiReasoning: move.reasoning,
       aiTiming: {
         getAIMove: move.aiTiming
-          ? {
-              configMs: move.aiTiming.configMs,
-              generateMs: move.aiTiming.generateMs,
-              totalMs: move.aiTiming.totalMs,
-            }
+          ? { configMs: move.aiTiming.configMs, generateMs: move.aiTiming.generateMs, totalMs: move.aiTiming.totalMs }
           : undefined,
         runOneAI: {
           contextMs: Math.round(contextMs),
@@ -267,12 +260,7 @@ async function runOneAI(playerId: string, playerName: string, personaKeyOrPrompt
       },
     });
 
-    return {
-      name: playerName,
-      action: skipped ? "end_turn" : move.action,
-      success: finalResult.success,
-      message: displayMessage,
-    };
+    return { action: skipped ? "end_turn" : move.action, message: displayMessage };
   } catch {
     const result = await processAction(playerId, "end_turn", undefined, {
       logMeta: { llmSource: "fallback", aiReasoning: "exception fallback" },
@@ -285,39 +273,26 @@ async function runOneAI(playerId: string, playerName: string, personaKeyOrPrompt
         details: { llmSource: "fallback", action: "end_turn", reasoning: "exception fallback", success: result.success } as object,
       },
     });
-    return { name: playerName, action: "end_turn (fallback)", success: result.success, message: result.message };
+    return { action: "end_turn (fallback)", message: result.message };
   }
 }
 
 /**
  * Starting from the current turn, run all consecutive AI players in sequence.
- * Stops when it reaches a human player (their turn) or wraps fully around.
- * Returns the list of AI actions taken.
+ * Stops when a human player's turn is reached or wraps fully around.
  */
-export async function runAISequence(gameSessionId: string): Promise<{ name: string; action: string; message: string }[]> {
-  const results: { name: string; action: string; message: string }[] = [];
-  const maxIterations = 20; // safety cap
-
-  for (let i = 0; i < maxIterations; i++) {
-    const turn = await getCurrentTurn(gameSessionId);
-    if (!turn) break;
-
-    // Stop if the current player is human — it's their turn now
-    if (!turn.isAI) break;
-
-    // Run this AI's turn
-    const aiPlayer = await prisma.player.findUnique({
-      where: { id: turn.currentPlayerId },
-      select: { aiPersona: true },
-    });
-
-    // aiPersona is a persona key; runOneAI expands it to the full prompt.
-    const result = await runOneAI(turn.currentPlayerId, turn.currentPlayerName, aiPlayer?.aiPersona ?? null);
-    results.push({ name: result.name, action: result.action, message: result.message });
-
-    // Advance to the next player
-    await advanceTurn(gameSessionId);
-  }
-
-  return results;
+export async function runAISequence(
+  gameSessionId: string,
+): Promise<{ name: string; action: string; message: string }[]> {
+  return _runAISequence(gameSessionId, {
+    getCurrentTurn,
+    advanceTurn,
+    async runAI(playerId, playerName) {
+      const player = await prisma.player.findUnique({
+        where: { id: playerId },
+        select: { aiPersona: true },
+      });
+      return runOneAI(playerId, playerName, player?.aiPersona ?? null);
+    },
+  });
 }

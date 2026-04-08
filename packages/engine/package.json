@@ -11,12 +11,17 @@
     "./db-context": "./src/db-context.ts",
     "./search": "./src/search.ts",
     "./turn-order": "./src/turn-order.ts",
-    "./door-game": "./src/door-game.ts"
+    "./door-game": "./src/door-game.ts",
+    "./ai-concurrency": "./src/ai-concurrency.ts",
+    "./door-ai-runtime-settings": "./src/door-ai-runtime-settings.ts",
+    "./llm": "./src/llm.ts",
+    "./ai-runner": "./src/ai-runner.ts"
   },
   "dependencies": {
     "@dge/shared": "*"
   },
   "peerDependencies": {
+    "@google/generative-ai": ">=0.24",
     "@prisma/client": ">=7",
     "ioredis": ">=5"
   }
