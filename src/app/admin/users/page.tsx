@@ -312,7 +312,6 @@ export default function AdminUsersPage() {
               <th className="p-2">Email</th>
               <th className="p-2">Created</th>
               <th className="p-2">Last login</th>
-              <th className="p-2 text-center">Active</th>
               <th className="p-2 text-center">Finished</th>
               <th className="p-2 text-center">Sessions</th>
               <th className="p-2">Active games</th>
@@ -329,7 +328,6 @@ export default function AdminUsersPage() {
                 <td className="p-2 text-green-500 break-all">{u.email}</td>
                 <td className="p-2 text-green-700 whitespace-nowrap">{fmtIso(u.createdAt)}</td>
                 <td className="p-2 text-green-700 whitespace-nowrap">{fmtIso(u.lastLoginAt)}</td>
-                <td className="p-2 text-center text-cyan-300">{u.activeGames}</td>
                 <td className="p-2 text-center text-green-700">{u.finishedGames}</td>
                 <td className="p-2 text-center text-green-700">{u.sessionsJoined}</td>
                 <td className="p-2 text-green-700 max-w-[220px]">
