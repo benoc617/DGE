@@ -13,6 +13,17 @@ export async function deleteGameSession(sessionId: string): Promise<boolean> {
 
   const playerIds = session.players.map((p) => p.id);
 
+  // HighScore rows are keyed by playerName (no FK), so fetch names before we delete players.
+  const playerNames =
+    playerIds.length > 0
+      ? (
+          await prisma.player.findMany({
+            where: { id: { in: playerIds } },
+            select: { name: true },
+          })
+        ).map((p) => p.name)
+      : [];
+
   const empires =
     playerIds.length > 0
       ? await prisma.empire.findMany({
@@ -26,6 +37,9 @@ export async function deleteGameSession(sessionId: string): Promise<boolean> {
     await tx.aiTurnJob.deleteMany({ where: { sessionId } });
     await tx.sessionLock.deleteMany({ where: { sessionId } });
     await tx.gameEvent.deleteMany({ where: { gameSessionId: sessionId } });
+    if (playerNames.length > 0) {
+      await tx.highScore.deleteMany({ where: { playerName: { in: playerNames } } });
+    }
 
     if (playerIds.length === 0) {
       await tx.gameSession.delete({ where: { id: sessionId } });
