@@ -19,7 +19,13 @@
       }
     ],
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@dge/shared": ["./packages/shared/src/index.ts"],
+      "@dge/shared/*": ["./packages/shared/src/*"],
+      "@dge/engine": ["./packages/engine/src/index.ts"],
+      "@dge/engine/*": ["./packages/engine/src/*"],
+      "@dge/shell": ["./packages/shell/src/index.ts"],
+      "@dge/shell/*": ["./packages/shell/src/*"]
     }
   },
   "include": [
@@ -30,5 +36,10 @@
     ".next/dev/types/**/*.ts",
     "**/*.mts"
   ],
-  "exclude": ["node_modules", "tests/e2e"]
+  "exclude": [
+    "node_modules",
+    "tests/e2e",
+    "packages/*/dist",
+    "games/*/dist"
+  ]
 }

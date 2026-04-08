@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "jsx": "react-jsx",
+    "paths": {
+      "@dge/shared": ["../shared/src/index.ts"],
+      "@dge/shared/*": ["../shared/src/*"],
+      "@dge/engine": ["../engine/src/index.ts"],
+      "@dge/engine/*": ["../engine/src/*"]
+    }
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx"]
+}

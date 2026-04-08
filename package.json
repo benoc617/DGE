@@ -2,6 +2,10 @@
   "name": "solar-realms-extreme",
   "version": "0.1.0",
   "private": true,
+  "workspaces": [
+    "packages/*",
+    "games/*"
+  ],
   "scripts": {
     "postinstall": "node scripts/fix-tsc-bin.js && prisma generate",
     "typecheck": "node ./node_modules/typescript/lib/tsc.js --noEmit",
@@ -41,6 +45,9 @@
     "repair:door-session": "npx tsx scripts/repair-door-game-session.ts"
   },
   "dependencies": {
+    "@dge/shared": "*",
+    "@dge/engine": "*",
+    "@dge/shell": "*",
     "@google/generative-ai": "^0.24.1",
     "@prisma/adapter-mariadb": "^7.6.0",
     "@prisma/client": "^7.6.0",
