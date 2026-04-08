@@ -1,155 +1,130 @@
 /**
- * Search-based AI opponent: N-player MCTS and shallow MaxN.
+ * SRX adapter for the @dge/engine generic MCTS/MaxN search.
  *
- * Both algorithms operate entirely on PureEmpireState (no DB, no async) and
- * are compatible with the simulation pipeline.
+ * Wraps PureEmpireState[] into a single SrxSearchState so the engine search
+ * can operate on a unified world state. The rival-propagation pattern
+ * (applyAction returns updated rival credits/population/army) is handled
+ * entirely inside the adapter functions — the engine never sees it.
  *
- * --- MCTS (recommended) ---
- * Uses UCB1 selection across all N players simultaneously.  Each leaf is
- * expanded by generating candidate moves with generateCandidateMoves(), then
- * a rollout is played to `rolloutDepth` turns using an existing strategy
- * function.  Backpropagation stores a score vector (one slot per player).
- *
- * --- MaxN ---
- * Depth-limited full tree search.  Stochastic nodes (RNG in applyTick) are
- * handled by averaging `rngSamples` independent samples.  Branch factor is
- * pruned to `branchFactor` candidates per node.
- *
- * Both return a `CandidateMove` to be fed into pickSimAction → processAction.
+ * Public API is identical to the previous implementation so all callers
+ * (gemini.ts, simulation.ts) remain unchanged.
  */
 
 import {
   type PureEmpireState,
   type RivalView,
   type CandidateMove,
-  applyTick,
-  applyAction,
-  generateCandidateMoves,
-  evalState,
+  applyTick as srxApplyTick,
+  applyAction as srxApplyAction,
+  generateCandidateMoves as srxGenerateCandidateMoves,
+  evalState as srxEvalState,
   makeRng,
   cloneEmpire,
-  pickRolloutMove,
+  pickRolloutMove as srxPickRolloutMove,
 } from "./sim-state";
+import {
+  mctsSearch as engineMctsSearch,
+  mctsSearchAsync as engineMctsSearchAsync,
+  maxNMove as engineMaxNMove,
+  type SearchGameFunctions,
+  type MCTSConfig,
+  type MaxNConfig,
+  type SearchOpponentConfig,
+} from "@dge/engine/search";
+import type { Move } from "@dge/shared";
+
+// Re-export config types so callers that import from this module still work.
+export type { MCTSConfig, MaxNConfig, SearchOpponentConfig, SearchStrategy } from "@dge/engine/search";
+export { DEFAULT_MCTS_CONFIG, DEFAULT_MAXN_CONFIG } from "@dge/engine/search";
 
 // ---------------------------------------------------------------------------
-// Types
+// SrxSearchState — single world state wrapping the per-player empire array
 // ---------------------------------------------------------------------------
-
-export interface MCTSConfig {
-  /** Number of MCTS rollout iterations (default 800). Ignored when timeLimitMs is set. */
-  iterations: number;
-  /** Wall-clock time budget in ms. When set, runs until elapsed instead of fixed iterations. */
-  timeLimitMs?: number;
-  /** Turns to simulate during each rollout (default 25 = ~5 days). */
-  rolloutDepth: number;
-  /** UCB1 exploration constant (default sqrt(2) ≈ 1.41). */
-  explorationC: number;
-  /** Candidate moves per node (default 12). */
-  branchFactor: number;
-  /** RNG seed for reproducibility (null = Math.random). */
-  seed: number | null;
-}
-
-export const DEFAULT_MCTS_CONFIG: MCTSConfig = {
-  iterations: 800,
-  rolloutDepth: 30,
-  explorationC: Math.SQRT2,
-  branchFactor: 12,
-  seed: null,
-};
-
-export interface MaxNConfig {
-  /** Search depth in turns (default 5 = 1 door-game day). */
-  depth: number;
-  /** Candidate moves per node (default 8). */
-  branchFactor: number;
-  /** Number of RNG samples to average over at stochastic nodes (default 3). */
-  rngSamples: number;
-  /** RNG seed for reproducibility (null = Math.random). */
-  seed: number | null;
-}
-
-export const DEFAULT_MAXN_CONFIG: MaxNConfig = {
-  depth: 5,
-  branchFactor: 8,
-  rngSamples: 3,
-  seed: null,
-};
-
-// ---------------------------------------------------------------------------
-// MCTS
-// ---------------------------------------------------------------------------
-
-interface MCTSNode {
-  move: CandidateMove | null; // null only for root
-  parent: MCTSNode | null;
-  children: MCTSNode[];
-  visits: number;
-  scores: number[]; // one entry per player, indexed by playerIdx
-  untriedMoves: CandidateMove[];
-  // State *after* this node's move was applied
-  states: PureEmpireState[];
-  currentPlayerIdx: number; // whose turn it is at this node
-}
-
-function ucb1(node: MCTSNode, parentVisits: number, explorationC: number, playerIdx: number): number {
-  if (node.visits === 0) return Infinity;
-  const exploitation = node.scores[playerIdx] / node.visits;
-  const exploration = explorationC * Math.sqrt(Math.log(parentVisits) / node.visits);
-  return exploitation + exploration;
-}
 
 /**
- * Run one MCTS rollout: random moves using the `rollout` strategy until
- * `rolloutDepth` turns have elapsed.
+ * Single world state for the SRX MCTS search.
+ * Wraps PureEmpireState[] so the generic engine sees one TState object.
  */
-function rollout(
-  states: PureEmpireState[],
-  currentPlayerIdx: number,
-  depth: number,
-  rng: () => number,
-): number[] {
-  const curStates = states.map(cloneEmpire);
-  let curIdx = currentPlayerIdx;
-  const n = curStates.length;
-
-  for (let d = 0; d < depth; d++) {
-    const s = curStates[curIdx];
-    if (s.turnsLeft <= 0) { curIdx = (curIdx + 1) % n; continue; }
-
-    const rivals: RivalView[] = curStates
-      .filter((_, i) => i !== curIdx)
-      .map((x) => ({
-        id: x.id, name: x.name, netWorth: x.netWorth,
-        isProtected: x.isProtected, credits: x.credits,
-        population: x.population, planets: x.planets, army: x.army,
-      }));
-
-    // Apply tick
-    curStates[curIdx] = applyTick(s, rng, n, true);
-
-    // Pick a strategy-aligned move (biased toward inferred play style; much better
-    // than uniform random for deferred-payoff strategies like research/supply).
-    const candidates = generateCandidateMoves(curStates[curIdx], rivals, 8);
-    const pick = pickRolloutMove(curStates[curIdx], candidates, rng);
-
-    const result = applyAction(curStates[curIdx], pick.action, pick.params, rivals, rng);
-    curStates[curIdx] = result.state;
-    // Merge rival changes back
-    for (const rv of result.rivals) {
-      const idx = curStates.findIndex((x) => x.id === rv.id);
-      if (idx >= 0 && idx !== curIdx) {
-        curStates[idx].credits = rv.credits;
-        curStates[idx].population = rv.population;
-        curStates[idx].army = { ...rv.army };
-      }
-    }
-
-    curIdx = (curIdx + 1) % n;
-  }
-
-  return curStates.map((s) => evalState(s, curStates));
+interface SrxSearchState {
+  empires: PureEmpireState[];
 }
+
+// ---------------------------------------------------------------------------
+// SRX SearchGameFunctions adapter
+// ---------------------------------------------------------------------------
+
+function makeRivalViews(empires: PureEmpireState[], exceptIdx: number): RivalView[] {
+  return empires
+    .filter((_, i) => i !== exceptIdx)
+    .map((x) => ({
+      id: x.id,
+      name: x.name,
+      netWorth: x.netWorth,
+      isProtected: x.isProtected,
+      credits: x.credits,
+      population: x.population,
+      planets: x.planets,
+      army: x.army,
+    }));
+}
+
+const srxSearchFunctions: SearchGameFunctions<SrxSearchState> = {
+  applyTick(state, playerIdx, rng, playerCount) {
+    const empires = state.empires.map((e, i) =>
+      i === playerIdx ? srxApplyTick(e, rng, playerCount, true) : e,
+    );
+    return { empires };
+  },
+
+  applyAction(state, playerIdx, action, params, rng) {
+    const rivals = makeRivalViews(state.empires, playerIdx);
+    const result = srxApplyAction(state.empires[playerIdx], action, params, rivals, rng);
+
+    // Merge rival state changes back into the world state.
+    const empires = state.empires.map((e, i) => {
+      if (i === playerIdx) return result.state;
+      const updated = result.rivals.find((r) => r.id === e.id);
+      if (!updated) return e;
+      return {
+        ...e,
+        credits: updated.credits,
+        population: updated.population,
+        army: { ...updated.army },
+      };
+    });
+
+    return { state: { empires }, success: result.success };
+  },
+
+  evalState(state, playerIdx) {
+    return srxEvalState(state.empires[playerIdx], state.empires);
+  },
+
+  generateCandidateMoves(state, playerIdx, maxMoves) {
+    const rivals = makeRivalViews(state.empires, playerIdx);
+    return srxGenerateCandidateMoves(state.empires[playerIdx], rivals, maxMoves) as Move[];
+  },
+
+  cloneState(state) {
+    return { empires: state.empires.map(cloneEmpire) };
+  },
+
+  pickRolloutMove(state, playerIdx, candidates, rng) {
+    return srxPickRolloutMove(state.empires[playerIdx], candidates as CandidateMove[], rng) as Move;
+  },
+
+  getPlayerCount(state) {
+    return state.empires.length;
+  },
+
+  isTerminal(state, playerIdx) {
+    return state.empires[playerIdx].turnsLeft <= 0;
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Public API — identical signatures to the old search-opponent.ts
+// ---------------------------------------------------------------------------
 
 /**
  * Run N-player MCTS and return the best move for `playerIdx`.
@@ -159,346 +134,23 @@ export function mctsSearch(
   playerIdx: number,
   config: Partial<MCTSConfig> = {},
 ): CandidateMove {
-  const cfg: MCTSConfig = { ...DEFAULT_MCTS_CONFIG, ...config };
-  const rng = cfg.seed !== null ? makeRng(cfg.seed) : Math.random;
-  const n = states.length;
-
-  const rivals: RivalView[] = states
-    .filter((_, i) => i !== playerIdx)
-    .map((s) => ({
-      id: s.id, name: s.name, netWorth: s.netWorth,
-      isProtected: s.isProtected, credits: s.credits,
-      population: s.population, planets: s.planets, army: s.army,
-    }));
-
-  const rootCandidates = generateCandidateMoves(states[playerIdx], rivals, cfg.branchFactor);
-  if (rootCandidates.length === 1) return rootCandidates[0];
-
-  const root: MCTSNode = {
-    move: null,
-    parent: null,
-    children: [],
-    visits: 0,
-    scores: Array<number>(n).fill(0),
-    untriedMoves: [...rootCandidates],
-    states: states.map(cloneEmpire),
-    currentPlayerIdx: playerIdx,
-  };
-
-  const deadline = cfg.timeLimitMs != null ? Date.now() + cfg.timeLimitMs : null;
-  for (let iter = 0; deadline !== null ? Date.now() < deadline : iter < cfg.iterations; iter++) {
-    // 1. Selection
-    let node = root;
-    while (node.untriedMoves.length === 0 && node.children.length > 0) {
-      node = node.children.reduce((best, child) =>
-        ucb1(child, node.visits, cfg.explorationC, node.currentPlayerIdx) >
-        ucb1(best, node.visits, cfg.explorationC, node.currentPlayerIdx)
-          ? child
-          : best,
-      );
-    }
-
-    // 2. Expansion
-    if (node.untriedMoves.length > 0) {
-      const moveIdx = Math.floor(rng() * node.untriedMoves.length);
-      const move = node.untriedMoves.splice(moveIdx, 1)[0];
-      const nextPlayerIdx = (node.currentPlayerIdx + 1) % n;
-
-      // Apply tick for the current player, then apply the move
-      const newStates = node.states.map(cloneEmpire);
-      newStates[node.currentPlayerIdx] = applyTick(newStates[node.currentPlayerIdx], rng, n, true);
-
-      const rivalViews: RivalView[] = newStates
-        .filter((_, i) => i !== node.currentPlayerIdx)
-        .map((s) => ({
-          id: s.id, name: s.name, netWorth: s.netWorth,
-          isProtected: s.isProtected, credits: s.credits,
-          population: s.population, planets: s.planets, army: s.army,
-        }));
-
-      const result = applyAction(newStates[node.currentPlayerIdx], move.action, move.params, rivalViews, rng);
-      newStates[node.currentPlayerIdx] = result.state;
-      for (const rv of result.rivals) {
-        const idx = newStates.findIndex((x) => x.id === rv.id);
-        if (idx >= 0 && idx !== node.currentPlayerIdx) {
-          newStates[idx].credits = rv.credits;
-          newStates[idx].population = rv.population;
-          newStates[idx].army = { ...rv.army };
-        }
-      }
-
-      // Generate child candidates for the *next* player
-      const childRivals: RivalView[] = newStates
-        .filter((_, i) => i !== nextPlayerIdx)
-        .map((s) => ({
-          id: s.id, name: s.name, netWorth: s.netWorth,
-          isProtected: s.isProtected, credits: s.credits,
-          population: s.population, planets: s.planets, army: s.army,
-        }));
-
-      const child: MCTSNode = {
-        move,
-        parent: node,
-        children: [],
-        visits: 0,
-        scores: Array<number>(n).fill(0),
-        untriedMoves: generateCandidateMoves(newStates[nextPlayerIdx], childRivals, cfg.branchFactor),
-        states: newStates,
-        currentPlayerIdx: nextPlayerIdx,
-      };
-      node.children.push(child);
-      node = child;
-    }
-
-    // 3. Simulation
-    const leafScores = rollout(node.states, node.currentPlayerIdx, cfg.rolloutDepth, rng);
-
-    // 4. Backpropagation
-    let cur: MCTSNode | null = node;
-    while (cur !== null) {
-      cur.visits++;
-      for (let i = 0; i < n; i++) {
-        cur.scores[i] += leafScores[i];
-      }
-      cur = cur.parent;
-    }
-  }
-
-  // Pick move with highest visit count at root (most robust)
-  if (root.children.length === 0) return rootCandidates[0];
-  const best = root.children.reduce((a, b) => (a.visits > b.visits ? a : b));
-  return best.move ?? rootCandidates[0];
+  const state: SrxSearchState = { empires: states };
+  const move = engineMctsSearch(srxSearchFunctions, state, playerIdx, config);
+  return move as CandidateMove;
 }
 
-const YIELD_INTERVAL_MS = 5;
-const yieldEventLoop = () => new Promise<void>((r) => setImmediate(r));
-
 /**
- * Async variant of mctsSearch that yields the event loop every ~50ms so
- * HTTP requests are not starved during long (e.g. 45s) MCTS budgets.
- * Identical algorithm — only the outer iteration loop adds periodic yields.
+ * Async variant — yields the event loop periodically to avoid starving HTTP
+ * requests during long (e.g. 45s) MCTS budgets.
  */
 export async function mctsSearchAsync(
   states: PureEmpireState[],
   playerIdx: number,
   config: Partial<MCTSConfig> = {},
 ): Promise<CandidateMove> {
-  const cfg: MCTSConfig = { ...DEFAULT_MCTS_CONFIG, ...config };
-  const rng = cfg.seed !== null ? makeRng(cfg.seed) : Math.random;
-  const n = states.length;
-
-  const rivals: RivalView[] = states
-    .filter((_, i) => i !== playerIdx)
-    .map((s) => ({
-      id: s.id, name: s.name, netWorth: s.netWorth,
-      isProtected: s.isProtected, credits: s.credits,
-      population: s.population, planets: s.planets, army: s.army,
-    }));
-
-  const rootCandidates = generateCandidateMoves(states[playerIdx], rivals, cfg.branchFactor);
-  if (rootCandidates.length === 1) return rootCandidates[0];
-
-  const root: MCTSNode = {
-    move: null,
-    parent: null,
-    children: [],
-    visits: 0,
-    scores: Array<number>(n).fill(0),
-    untriedMoves: [...rootCandidates],
-    states: states.map(cloneEmpire),
-    currentPlayerIdx: playerIdx,
-  };
-
-  const deadline = cfg.timeLimitMs != null ? Date.now() + cfg.timeLimitMs : null;
-  let lastYield = Date.now();
-
-  for (let iter = 0; deadline !== null ? Date.now() < deadline : iter < cfg.iterations; iter++) {
-    // Yield to the event loop periodically so HTTP requests are not starved
-    const now = Date.now();
-    if (now - lastYield >= YIELD_INTERVAL_MS) {
-      await yieldEventLoop();
-      lastYield = Date.now();
-    }
-
-    // 1. Selection
-    let node = root;
-    while (node.untriedMoves.length === 0 && node.children.length > 0) {
-      node = node.children.reduce((best, child) =>
-        ucb1(child, node.visits, cfg.explorationC, node.currentPlayerIdx) >
-        ucb1(best, node.visits, cfg.explorationC, node.currentPlayerIdx)
-          ? child
-          : best,
-      );
-    }
-
-    // 2. Expansion
-    if (node.untriedMoves.length > 0) {
-      const moveIdx = Math.floor(rng() * node.untriedMoves.length);
-      const move = node.untriedMoves.splice(moveIdx, 1)[0];
-      const nextPlayerIdx = (node.currentPlayerIdx + 1) % n;
-
-      const newStates = node.states.map(cloneEmpire);
-      newStates[node.currentPlayerIdx] = applyTick(newStates[node.currentPlayerIdx], rng, n, true);
-
-      const rivalViews: RivalView[] = newStates
-        .filter((_, i) => i !== node.currentPlayerIdx)
-        .map((s) => ({
-          id: s.id, name: s.name, netWorth: s.netWorth,
-          isProtected: s.isProtected, credits: s.credits,
-          population: s.population, planets: s.planets, army: s.army,
-        }));
-
-      const result = applyAction(newStates[node.currentPlayerIdx], move.action, move.params, rivalViews, rng);
-      newStates[node.currentPlayerIdx] = result.state;
-      for (const rv of result.rivals) {
-        const idx = newStates.findIndex((x) => x.id === rv.id);
-        if (idx >= 0 && idx !== node.currentPlayerIdx) {
-          newStates[idx].credits = rv.credits;
-          newStates[idx].population = rv.population;
-          newStates[idx].army = { ...rv.army };
-        }
-      }
-
-      const childRivals: RivalView[] = newStates
-        .filter((_, i) => i !== nextPlayerIdx)
-        .map((s) => ({
-          id: s.id, name: s.name, netWorth: s.netWorth,
-          isProtected: s.isProtected, credits: s.credits,
-          population: s.population, planets: s.planets, army: s.army,
-        }));
-
-      const child: MCTSNode = {
-        move,
-        parent: node,
-        children: [],
-        visits: 0,
-        scores: Array<number>(n).fill(0),
-        untriedMoves: generateCandidateMoves(newStates[nextPlayerIdx], childRivals, cfg.branchFactor),
-        states: newStates,
-        currentPlayerIdx: nextPlayerIdx,
-      };
-      node.children.push(child);
-      node = child;
-    }
-
-    // 3. Simulation
-    const leafScores = rollout(node.states, node.currentPlayerIdx, cfg.rolloutDepth, rng);
-
-    // 4. Backpropagation
-    let cur: MCTSNode | null = node;
-    while (cur !== null) {
-      cur.visits++;
-      for (let i = 0; i < n; i++) {
-        cur.scores[i] += leafScores[i];
-      }
-      cur = cur.parent;
-    }
-  }
-
-  if (root.children.length === 0) return rootCandidates[0];
-  const best = root.children.reduce((a, b) => (a.visits > b.visits ? a : b));
-  return best.move ?? rootCandidates[0];
-}
-
-/**
- * Async variant of searchOpponentMove — uses mctsSearchAsync so the event loop
- * is not starved during long MCTS budgets. Use this from live server paths;
- * the sync searchOpponentMove is fine for simulation (short budgets).
- */
-export async function searchOpponentMoveAsync(
-  states: PureEmpireState[],
-  playerIdx: number,
-  cfg: SearchOpponentConfig = { strategy: "mcts" },
-): Promise<CandidateMove> {
-  if (cfg.strategy === "maxn") {
-    return maxNMove(states, playerIdx, cfg.maxn);
-  }
-  return mctsSearchAsync(states, playerIdx, cfg.mcts);
-}
-
-// ---------------------------------------------------------------------------
-// MaxN
-// ---------------------------------------------------------------------------
-
-interface MaxNResult {
-  scores: number[]; // one per player
-}
-
-/**
- * Recursive MaxN search.
- * Returns a score vector; at the root call, use the child with highest score[playerIdx].
- */
-function maxNSearch(
-  states: PureEmpireState[],
-  playerIdx: number,
-  depth: number,
-  cfg: MaxNConfig,
-  sampleRng: (i: number) => () => number,
-): MaxNResult {
-  const n = states.length;
-  const s = states[playerIdx];
-
-  if (depth === 0 || s.turnsLeft <= 0) {
-    return { scores: states.map((x) => evalState(x, states)) };
-  }
-
-  const rivals: RivalView[] = states
-    .filter((_, i) => i !== playerIdx)
-    .map((x) => ({
-      id: x.id, name: x.name, netWorth: x.netWorth,
-      isProtected: x.isProtected, credits: x.credits,
-      population: x.population, planets: x.planets, army: x.army,
-    }));
-
-  const candidates = generateCandidateMoves(s, rivals, cfg.branchFactor);
-  const nextPlayerIdx = (playerIdx + 1) % n;
-
-  let bestScores: number[] | null = null;
-
-  for (const move of candidates) {
-    // Average over `rngSamples` RNG draws
-    const sampleScores = Array<number>(n).fill(0);
-
-    for (let si = 0; si < cfg.rngSamples; si++) {
-      const rng = sampleRng(si);
-      const newStates = states.map(cloneEmpire);
-
-      // Tick for current player
-      newStates[playerIdx] = applyTick(newStates[playerIdx], rng, n, true);
-
-      // Apply move
-      const rivalViews: RivalView[] = newStates
-        .filter((_, i) => i !== playerIdx)
-        .map((x) => ({
-          id: x.id, name: x.name, netWorth: x.netWorth,
-          isProtected: x.isProtected, credits: x.credits,
-          population: x.population, planets: x.planets, army: x.army,
-        }));
-
-      const result = applyAction(newStates[playerIdx], move.action, move.params, rivalViews, rng);
-      newStates[playerIdx] = result.state;
-      for (const rv of result.rivals) {
-        const idx = newStates.findIndex((x) => x.id === rv.id);
-        if (idx >= 0 && idx !== playerIdx) {
-          newStates[idx].credits = rv.credits;
-          newStates[idx].population = rv.population;
-          newStates[idx].army = { ...rv.army };
-        }
-      }
-
-      const childResult = maxNSearch(newStates, nextPlayerIdx, depth - 1, cfg, sampleRng);
-      for (let i = 0; i < n; i++) sampleScores[i] += childResult.scores[i];
-    }
-
-    const avgScores = sampleScores.map((v) => v / cfg.rngSamples);
-
-    // MaxN: current player maximizes their own score
-    if (bestScores === null || avgScores[playerIdx] > bestScores[playerIdx]) {
-      bestScores = avgScores;
-    }
-  }
-
-  return { scores: bestScores ?? states.map((x) => evalState(x, states)) };
+  const state: SrxSearchState = { empires: states };
+  const move = await engineMctsSearchAsync(srxSearchFunctions, state, playerIdx, config);
+  return move as CandidateMove;
 }
 
 /**
@@ -509,106 +161,37 @@ export function maxNMove(
   playerIdx: number,
   config: Partial<MaxNConfig> = {},
 ): CandidateMove {
-  const cfg: MaxNConfig = { ...DEFAULT_MAXN_CONFIG, ...config };
-  const n = states.length;
-
-  const rivals: RivalView[] = states
-    .filter((_, i) => i !== playerIdx)
-    .map((s) => ({
-      id: s.id, name: s.name, netWorth: s.netWorth,
-      isProtected: s.isProtected, credits: s.credits,
-      population: s.population, planets: s.planets, army: s.army,
-    }));
-
-  const candidates = generateCandidateMoves(states[playerIdx], rivals, cfg.branchFactor);
-  if (candidates.length === 1) return candidates[0];
-
-  const nextPlayerIdx = (playerIdx + 1) % n;
-
-  // Create per-sample RNG functions
-  const baseSeed = cfg.seed !== null ? cfg.seed : Math.floor(Math.random() * 0xffffffff);
-  const sampleRng = (sampleIdx: number) => makeRng(baseSeed + sampleIdx * 997);
-
-  let bestMove = candidates[0];
-  let bestScore = -Infinity;
-
-  for (const move of candidates) {
-    const sampleScores: number[] = Array<number>(n).fill(0);
-
-    for (let si = 0; si < cfg.rngSamples; si++) {
-      const rng = sampleRng(si);
-      const newStates = states.map(cloneEmpire);
-
-      // Tick for current player
-      newStates[playerIdx] = applyTick(newStates[playerIdx], rng, n, true);
-
-      // Apply move
-      const rivalViews: RivalView[] = newStates
-        .filter((_, i) => i !== playerIdx)
-        .map((s) => ({
-          id: s.id, name: s.name, netWorth: s.netWorth,
-          isProtected: s.isProtected, credits: s.credits,
-          population: s.population, planets: s.planets, army: s.army,
-        }));
-
-      const result = applyAction(newStates[playerIdx], move.action, move.params, rivalViews, rng);
-      newStates[playerIdx] = result.state;
-      for (const rv of result.rivals) {
-        const idx = newStates.findIndex((x) => x.id === rv.id);
-        if (idx >= 0 && idx !== playerIdx) {
-          newStates[idx].credits = rv.credits;
-          newStates[idx].population = rv.population;
-          newStates[idx].army = { ...rv.army };
-        }
-      }
-
-      const childResult = maxNSearch(newStates, nextPlayerIdx, cfg.depth - 1, cfg, sampleRng);
-      sampleScores[playerIdx] += childResult.scores[playerIdx];
-    }
-
-    const avgScore = sampleScores[playerIdx] / cfg.rngSamples;
-    if (avgScore > bestScore) {
-      bestScore = avgScore;
-      bestMove = move;
-    }
-  }
-
-  return bestMove;
+  const state: SrxSearchState = { empires: states };
+  const move = engineMaxNMove(srxSearchFunctions, state, playerIdx, config);
+  return move as CandidateMove;
 }
 
-// ---------------------------------------------------------------------------
-// Unified entry point for simulation / AI
-// ---------------------------------------------------------------------------
-
-export type SearchStrategy = "mcts" | "maxn";
-
-export interface SearchOpponentConfig {
-  strategy: SearchStrategy;
-  mcts?: Partial<MCTSConfig>;
-  maxn?: Partial<MaxNConfig>;
+/**
+ * Async variant of searchOpponentMove — use from live server paths.
+ */
+export async function searchOpponentMoveAsync(
+  states: PureEmpireState[],
+  playerIdx: number,
+  cfg: SearchOpponentConfig = { strategy: "mcts" },
+): Promise<CandidateMove> {
+  if (cfg.strategy === "maxn") return maxNMove(states, playerIdx, cfg.maxn);
+  return mctsSearchAsync(states, playerIdx, cfg.mcts);
 }
 
 /**
  * Pick a move for `playerIdx` using the specified search strategy.
- *
- * @param states  All player states (index == player slot; playerIdx is the mover)
- * @param playerIdx  Which player is moving
- * @param cfg  Search configuration
  */
 export function searchOpponentMove(
   states: PureEmpireState[],
   playerIdx: number,
   cfg: SearchOpponentConfig = { strategy: "mcts" },
 ): CandidateMove {
-  if (cfg.strategy === "maxn") {
-    return maxNMove(states, playerIdx, cfg.maxn);
-  }
+  if (cfg.strategy === "maxn") return maxNMove(states, playerIdx, cfg.maxn);
   return mctsSearch(states, playerIdx, cfg.mcts);
 }
 
 /**
- * Convenience: build a `states` array where the caller's empire is at index 0
- * and rivals fill the rest.
+ * Convenience: build a `states` array with self at index 0 and rivals after.
  */
 export function buildSearchStates(
   self: PureEmpireState,

@@ -2,3 +2,4 @@
 export * from "./db-context";
 export * from "./redis";
 export * from "./cache";
+export * from "./search";

@@ -8,7 +8,8 @@
     ".": "./src/index.ts",
     "./redis": "./src/redis.ts",
     "./cache": "./src/cache.ts",
-    "./db-context": "./src/db-context.ts"
+    "./db-context": "./src/db-context.ts",
+    "./search": "./src/search.ts"
   },
   "dependencies": {
     "@dge/shared": "*"
