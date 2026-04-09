@@ -70,19 +70,29 @@ async function processJob(jobId: string, sessionId: string, playerId: string): P
 }
 
 /**
- * One worker slot: drain the queue until empty.
- * Loops claiming and processing jobs so that cascaded jobs (e.g. Gemini AI
- * finishing slot 1 and enqueuing slot 2) are picked up immediately without
- * waiting for slower concurrent slots (e.g. MCTS at 45s) to finish.
- * Returns true if at least one job was processed.
+ * One independent worker slot — loops forever, claiming and processing jobs.
+ *
+ * Each slot is a fully independent async loop. When it finishes a job, it
+ * immediately tries to claim the next one (no waiting for other slots).
+ * When the queue is empty, it sleeps for POLL_INTERVAL_MS before retrying.
+ *
+ * This ensures a 45s MCTS job on slot 0 never blocks slots 1-3 from picking
+ * up and completing fast Gemini jobs that arrive in the meantime.
  */
-async function tick(workerId: string): Promise<boolean> {
-  let didWork = false;
+async function runSlot(slotId: number): Promise<never> {
+  const prefix = `[ai-worker] ${WORKER_ID.slice(0, 8)} slot=${slotId}`;
   while (true) {
-    const job = await claimNextJob(workerId);
-    if (!job) return didWork;
-    await processJob(job.id, job.sessionId, job.playerId);
-    didWork = true;
+    try {
+      const job = await claimNextJob(WORKER_ID);
+      if (!job) {
+        await sleep(POLL_INTERVAL_MS);
+        continue;
+      }
+      await processJob(job.id, job.sessionId, job.playerId);
+    } catch (err) {
+      console.error(`${prefix} error:`, err);
+      await sleep(POLL_INTERVAL_MS);
+    }
   }
 }
 
@@ -92,38 +102,32 @@ async function runWorker(): Promise<void> {
     `[ai-worker] starting id=${WORKER_ID} concurrency=${initialSettings.aiWorkerConcurrency} (admin-configurable) poll=${POLL_INTERVAL_MS}ms`,
   );
 
-  let lastRecovery = 0;
-
-  while (true) {
-    try {
-      // Stale job recovery (every 30s)
-      const now = Date.now();
-      if (now - lastRecovery > STALE_RECOVERY_INTERVAL_MS) {
+  // Stale job recovery loop — runs independently of worker slots.
+  (async function staleRecoveryLoop() {
+    while (true) {
+      try {
         const recovered = await recoverStaleJobs(STALE_THRESHOLD_MS);
         if (recovered > 0) {
           console.log(`[ai-worker] recovered ${recovered} stale jobs`);
         }
-        lastRecovery = now;
+      } catch (err) {
+        console.error("[ai-worker] stale recovery error:", err);
       }
-
-      // Read concurrency from DB (cached ~60s) so admin changes apply without restart.
-      const settings = await resolveDoorAiRuntimeSettings();
-      const concurrency = settings.aiWorkerConcurrency;
-
-      // Run up to concurrency jobs in parallel
-      const slots = Array.from({ length: concurrency }, () => tick(WORKER_ID));
-      const results = await Promise.all(slots);
-      const anyWork = results.some(Boolean);
-
-      if (!anyWork) {
-        await sleep(POLL_INTERVAL_MS);
-      }
-      // If work was done, immediately poll again — there may be more jobs.
-    } catch (err) {
-      console.error("[ai-worker] poll loop error:", err);
-      await sleep(POLL_INTERVAL_MS);
+      await sleep(STALE_RECOVERY_INTERVAL_MS);
     }
+  })();
+
+  // Concurrency adjustment loop — periodically reads DB config and spawns/logs slot changes.
+  // Initial slots are started here; dynamic scaling (adding slots at runtime) is not yet
+  // supported — the worker reads the initial concurrency and launches that many slots.
+  const concurrency = initialSettings.aiWorkerConcurrency;
+  const slots: Promise<never>[] = [];
+  for (let i = 0; i < concurrency; i++) {
+    slots.push(runSlot(i));
   }
+
+  // Slots run forever — await to catch fatal errors.
+  await Promise.race(slots);
 }
 
 runWorker().catch((err) => {
