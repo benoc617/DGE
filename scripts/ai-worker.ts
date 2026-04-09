@@ -70,14 +70,20 @@ async function processJob(jobId: string, sessionId: string, playerId: string): P
 }
 
 /**
- * One worker slot: claim a job (if available) and process it.
- * Returns true if a job was processed, false if queue was empty.
+ * One worker slot: drain the queue until empty.
+ * Loops claiming and processing jobs so that cascaded jobs (e.g. Gemini AI
+ * finishing slot 1 and enqueuing slot 2) are picked up immediately without
+ * waiting for slower concurrent slots (e.g. MCTS at 45s) to finish.
+ * Returns true if at least one job was processed.
  */
 async function tick(workerId: string): Promise<boolean> {
-  const job = await claimNextJob(workerId);
-  if (!job) return false;
-  await processJob(job.id, job.sessionId, job.playerId);
-  return true;
+  let didWork = false;
+  while (true) {
+    const job = await claimNextJob(workerId);
+    if (!job) return didWork;
+    await processJob(job.id, job.sessionId, job.playerId);
+    didWork = true;
+  }
 }
 
 async function runWorker(): Promise<void> {
