@@ -426,7 +426,7 @@ export default function Home() {
     const body: Record<string, unknown> = { name: authUser.username, password: loginPassword };
     if (lobbySessionId) body.sessionId = lobbySessionId;
     else if (joinInviteCode) body.inviteCode = joinInviteCode;
-    else { setError("Enter an invite code or select a public galaxy"); setLoading(false); return; }
+    else { setError("Enter an invite code or select a public session"); setLoading(false); return; }
 
     const res = await apiFetch("/api/game/join", {
       method: "POST",
@@ -715,7 +715,7 @@ export default function Home() {
                 {myGames.map((g) => (
                   <div key={g.playerId} className="border border-green-800 p-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
                     <div>
-                      <div className="text-green-300 text-sm">{g.galaxyName ?? "Unnamed galaxy"}</div>
+                      <div className="text-green-300 text-sm">{g.galaxyName ?? "Unnamed session"}</div>
                       <div className="text-green-700 text-[10px]">
                         Turn {g.turnsPlayed} · {g.turnsLeft} left · {g.playerCount}/{g.maxPlayers} commanders
                         {g.waitingForHuman ? " · LOBBY" : ""}
@@ -749,8 +749,8 @@ export default function Home() {
               }}
               className="w-full border border-yellow-600 p-3 hover:bg-yellow-900/20 text-left"
             >
-              <div className="text-yellow-400 font-bold tracking-wider">CREATE NEW GALAXY</div>
-              <p className="text-green-700 text-xs mt-1">Galaxy settings and optional AI rivals on one screen.</p>
+              <div className="text-yellow-400 font-bold tracking-wider">CREATE NEW SESSION</div>
+              <p className="text-green-700 text-xs mt-1">Configure and launch a new game on one screen.</p>
             </button>
             {meta.supportsJoin && (
               <button
@@ -762,7 +762,7 @@ export default function Home() {
                 }}
                 className="w-full border border-green-600 p-3 hover:bg-green-900/20 text-left"
               >
-                <div className="text-green-400 font-bold tracking-wider">JOIN EXISTING GALAXY</div>
+                <div className="text-green-400 font-bold tracking-wider">JOIN EXISTING SESSION</div>
                 <p className="text-green-700 text-xs mt-1">Public list or invite code.</p>
               </button>
             )}
@@ -789,7 +789,7 @@ export default function Home() {
       <main className="min-h-screen bg-black text-green-400 flex flex-col items-center justify-center font-mono">
         <div className="text-center mb-6">
           <h1 className="text-2xl font-bold tracking-widest text-yellow-400 mb-1">{meta.displayName.toUpperCase()}</h1>
-          <p className="text-green-600 text-sm tracking-widest">JOIN A GALAXY</p>
+          <p className="text-green-600 text-sm tracking-widest">JOIN A SESSION</p>
         </div>
         <div className="border border-green-700 p-6 w-[480px] bg-black/80 space-y-4">
           {authUser && (
@@ -820,7 +820,7 @@ export default function Home() {
 
           {lobbies.length > 0 && (
             <div>
-              <div className="text-green-600 text-xs mb-2 border-b border-green-900 pb-1">PUBLIC GALAXIES</div>
+              <div className="text-green-600 text-xs mb-2 border-b border-green-900 pb-1">PUBLIC SESSIONS</div>
               <div className="space-y-1 max-h-60 overflow-y-auto">
                 {lobbies.map((l) => (
                   <button
@@ -843,7 +843,7 @@ export default function Home() {
           )}
 
           {lobbies.length === 0 && (
-            <div className="text-green-800 text-xs text-center py-4">No public galaxies available</div>
+            <div className="text-green-800 text-xs text-center py-4">No public sessions available</div>
           )}
 
           {error && <p className="text-red-500 text-sm">{error}</p>}
@@ -868,9 +868,9 @@ export default function Home() {
       <main className="min-h-screen bg-black text-green-400 flex flex-col items-center justify-center font-mono py-8 px-2">
         <div className="text-center mb-4">
           <h1 className="text-2xl font-bold tracking-widest text-yellow-400 mb-1">{meta.displayName.toUpperCase()}</h1>
-          <p className="text-green-600 text-sm tracking-widest">NEW GALAXY</p>
+          <p className="text-green-600 text-sm tracking-widest">NEW SESSION</p>
           <p className="text-green-800 text-[11px] mt-1 max-w-md mx-auto">
-            Session settings — one step to create and enter.
+            One step to create and enter.
           </p>
         </div>
         <div className="border border-green-700 p-6 w-[min(540px,96vw)] max-h-[min(90vh,900px)] overflow-y-auto bg-black/80 space-y-4">
@@ -880,12 +880,12 @@ export default function Home() {
             </div>
           )}
 
-          {/* Galaxy name (engine-level, always shown) */}
+          {/* Session name (engine-level, always shown) */}
           <div>
-            <label className="text-green-600 text-xs block mb-1">Galaxy Name (optional):</label>
+            <label className="text-green-600 text-xs block mb-1">Session Name (optional):</label>
             <input
               className="w-full bg-black border border-green-600 text-green-300 px-3 py-2 outline-none focus:border-yellow-400 font-mono"
-              placeholder="e.g. Alpha Centauri"
+              placeholder="e.g. My Session"
               value={inputGalaxyName}
               onChange={(e) => setInputGalaxyName(e.target.value)}
               autoFocus
@@ -991,7 +991,7 @@ export default function Home() {
             disabled={loading || !loginPassword}
             className="w-full border border-yellow-600 py-2 hover:bg-yellow-900 disabled:opacity-40 text-yellow-400 font-bold tracking-wider"
           >
-            {loading ? "CREATING…" : "CREATE GALAXY"}
+            {loading ? "CREATING…" : "CREATE SESSION"}
           </button>
           <button
             type="button"
