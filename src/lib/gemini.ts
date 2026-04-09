@@ -309,7 +309,8 @@ async function mctsLocalFallback(
       ...move.params,
       reasoning: `MCTS(${budgetMs}ms budget): ${move.label}`,
     };
-  } catch {
+  } catch (err) {
+    console.warn("[srx-ai] mctsLocalFallback exception — falling through to sim-strategy:", err instanceof Error ? err.message : String(err));
     return null;
   }
 }

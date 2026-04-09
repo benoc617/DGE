@@ -139,6 +139,10 @@ export async function callGeminiAPI(prompt: string): Promise<{
   try {
     const model = new GoogleGenerativeAI(geminiCfg.apiKey).getGenerativeModel({
       model: geminiCfg.model,
+      // Disable extended thinking: game move decisions don't benefit from chain-of-thought
+      // reasoning, and thinking adds 15–60s latency per call (9× slower with our prompt size).
+      // SDK 0.24.1 types don't include thinkingConfig yet, hence the cast.
+      generationConfig: { thinkingConfig: { thinkingBudget: 0 } } as Record<string, unknown>,
     });
     const tGen0 = performance.now();
     const result = await withGeminiGeneration(async () =>

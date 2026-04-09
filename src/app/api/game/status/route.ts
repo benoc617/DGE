@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { CIVIL_STATUS_NAMES, PLANET_CONFIG } from "@/lib/game-constants";
 import { getCurrentTurn } from "@/lib/turn-order";
 import { tryRollRound, enqueueAiTurnsForSession } from "@/lib/door-game-turns";
+import { recoverSequentialAI, SEQUENTIAL_AI_STALE_MS } from "@/lib/ai-runner";
 import { logSrxTiming, msElapsed } from "@/lib/srx-timing";
 import { getCachedPlayer } from "@/lib/game-state-service";
 import bcrypt from "bcryptjs";
@@ -265,6 +266,24 @@ export async function GET(req: NextRequest) {
         await enqueueAiTurnsForSession(player.gameSessionId!);
       } catch (e) {
         console.error("[status] after: tryRollRound/enqueue error", e);
+      }
+    });
+  }
+
+  // Non-blocking: recover a sequential-mode AI turn that was abandoned after a
+  // server restart (the fire-and-forget runAISequence promise was killed).
+  // Only fires when it's not our turn (possibly an AI's turn) and the turn has
+  // been idle for longer than SEQUENTIAL_AI_STALE_MS.
+  if (body.turnMode === "sequential" && player.gameSessionId && !body.isYourTurn) {
+    after(async () => {
+      try {
+        const turn = await getCurrentTurn(player.gameSessionId!);
+        if (!turn?.isAI) return;
+        const ageMs = Date.now() - new Date(turn.turnStartedAt).getTime();
+        if (ageMs < SEQUENTIAL_AI_STALE_MS) return;
+        await recoverSequentialAI(player.gameSessionId!);
+      } catch (e) {
+        console.error("[status] after: sequential AI stale-turn recovery error", e);
       }
     });
   }

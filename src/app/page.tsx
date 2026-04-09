@@ -1058,9 +1058,15 @@ export default function Home() {
           </h1>
           <p className="text-green-600 text-sm tracking-widest">TURN-BASED MULTIPLAYER</p>
         </div>
-        <div className="border border-green-700 p-8 w-96 max-w-[95vw] bg-black/80">
+        <form
+          className="border border-green-700 p-8 w-96 max-w-[95vw] bg-black/80"
+          onSubmit={(e) => { e.preventDefault(); login(); }}
+          autoComplete="on"
+        >
           <label className="text-green-600 text-xs block mb-1">Username</label>
           <input
+            name="username"
+            autoComplete="username"
             className="w-full bg-black border border-green-600 text-green-300 px-3 py-2 mb-3 outline-none focus:border-yellow-400 font-mono"
             placeholder="Your username..."
             value={inputName}
@@ -1069,17 +1075,18 @@ export default function Home() {
           />
           <label className="text-green-600 text-xs block mb-1">Password</label>
           <input
+            name="password"
             type="password"
+            autoComplete="current-password"
             className="w-full bg-black border border-green-600 text-green-300 px-3 py-2 mb-4 outline-none focus:border-yellow-400 font-mono"
             placeholder="Password..."
             value={loginPassword}
             onChange={(e) => setLoginPassword(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && login()}
           />
           {error && <p className="text-red-500 text-sm mb-3">{error}</p>}
           <div className="flex gap-3">
             <button
-              onClick={login}
+              type="submit"
               disabled={loading || !inputName || !loginPassword}
               className="flex-1 border border-green-600 py-2 hover:bg-green-900 disabled:opacity-40"
             >
@@ -1099,7 +1106,7 @@ export default function Home() {
               SIGN UP
             </button>
           </div>
-        </div>
+        </form>
         <p className="text-green-800 text-xs mt-4">A turn-based galactic empire management game</p>
         <Link href="/admin" className="text-green-800 text-xs mt-3 hover:text-green-500 underline">
           Admin
@@ -1150,6 +1157,7 @@ export default function Home() {
             <label className="text-green-600 text-xs block mb-1">Password</label>
             <input
               type="password"
+              autoComplete="new-password"
               className="w-full bg-black border border-green-600 text-green-300 px-3 py-2 outline-none focus:border-yellow-400 font-mono"
               placeholder="Min 8 characters"
               value={signupPassword}
@@ -1160,6 +1168,7 @@ export default function Home() {
             <label className="text-green-600 text-xs block mb-1">Password (confirm)</label>
             <input
               type="password"
+              autoComplete="new-password"
               className={`w-full bg-black border text-green-300 px-3 py-2 outline-none font-mono ${signupPasswordConfirm && signupPassword !== signupPasswordConfirm ? "border-red-600" : "border-green-600 focus:border-yellow-400"}`}
               placeholder="Repeat password"
               value={signupPasswordConfirm}

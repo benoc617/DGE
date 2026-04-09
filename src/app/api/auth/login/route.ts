@@ -62,10 +62,18 @@ export async function POST(req: NextRequest) {
     if (!sess || sess.status !== "active") continue;
     let isYourTurn = false;
     let currentTurnPlayer: string | null = null;
-    const turn = await getCurrentTurn(sess.id);
-    if (turn) {
-      isYourTurn = turn.currentPlayerId === p.id;
-      currentTurnPlayer = turn.currentPlayerName;
+    if (sess.turnMode === "simultaneous") {
+      // Simultaneous: isYourTurn = player still has daily action slots available.
+      // getCurrentTurn is a sequential concept and returns wrong results here.
+      const used = p.empire!.fullTurnsUsedThisRound ?? 0;
+      const fullTurnsLeftToday = Math.max(0, sess.actionsPerDay - used);
+      isYourTurn = fullTurnsLeftToday > 0 && p.empire!.turnsLeft > 0;
+    } else {
+      const turn = await getCurrentTurn(sess.id);
+      if (turn) {
+        isYourTurn = turn.currentPlayerId === p.id;
+        currentTurnPlayer = turn.currentPlayerName;
+      }
     }
     games.push({
       playerId: p.id,

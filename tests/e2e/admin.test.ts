@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import {
   adminLogin,
   adminGalaxies,
@@ -8,6 +8,7 @@ import {
   adminChangePassword,
   resetAdminPasswordOverride,
   resetSystemSettings,
+  restoreSystemSettingsFromEnv,
   adminGetSettings,
   adminPatchSettings,
   joinGame,
@@ -25,7 +26,11 @@ import {
 describe("E2E: Admin API", () => {
   beforeEach(async () => {
     await resetAdminPasswordOverride();
-    await resetSystemSettings();
+  });
+
+  afterEach(async () => {
+    // Restore any SystemSettings cleared by tests so the Gemini key survives the test run.
+    await restoreSystemSettingsFromEnv();
   });
 
   it("changes admin password via API; clearing DB restores env password login", async () => {
@@ -51,6 +56,8 @@ describe("E2E: Admin API", () => {
   });
 
   it("reads and updates integration settings", async () => {
+    // Reset SystemSettings to test from env-only baseline; restore after.
+    await resetSystemSettings();
     const { cookie } = await adminLogin();
     expect(cookie).toBeTruthy();
 

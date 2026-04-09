@@ -251,8 +251,50 @@ Use this when you need to verify what happened in a live or test DB (e.g. from C
 
 1. Load env: `cd` to repo root and `set -a && [ -f .env ] && . ./.env && set +a` (or rely on the shell’s existing `DATABASE_URL`).
 2. **Prisma Studio** — browse tables visually. **Agents:** `docker compose exec app npx prisma studio` (same DB and client as the app). Humans may use host `npx prisma studio` with `DATABASE_URL` → `localhost:3306` when Compose owns MySQL.
-3. **Ad-hoc script** — `npx tsx -e '...'` with `PrismaClient` + `@prisma/adapter-mariadb` (same pattern as `src/lib/prisma.ts`). Example: `GameSession.findFirst({ where: { galaxyName: "..." } })`, then `TurnLog.findMany({ where: { player: { gameSessionId: sid } }, orderBy: { createdAt: "asc" } })`.
-4. **Raw SQL** — `mysql -u srx -psrx srx` (or `mysql "$DATABASE_URL"`) if `mysql` client is installed.
+3. **Ad-hoc script** — `npx tsx -e ‘...’` with `PrismaClient` + `@prisma/adapter-mariadb` (same pattern as `src/lib/prisma.ts`). Example: `GameSession.findFirst({ where: { galaxyName: "..." } })`, then `TurnLog.findMany({ where: { player: { gameSessionId: sid } }, orderBy: { createdAt: "asc" } })`.
+4. **Raw SQL via the mysql container** — always use `docker compose exec mysql mysql -u srx -psrx srx` (the `mysql` client is not installed in the `app` container). Suppress the password warning with `2>/dev/null`. Column names in the schema use camelCase (e.g. `galaxyName`, `isAI`, `aiPersona`, `turnsLeft`).
+
+### Useful raw-SQL queries for live game analysis
+
+```sql
+-- All players + empire snapshot for a named galaxy
+SELECT p.name, p.isAI, p.aiPersona, p.turnOrder,
+       e.turnsLeft, e.turnsPlayed, e.netWorth, e.credits
+FROM Player p
+JOIN Empire e ON e.playerId = p.id
+JOIN GameSession gs ON gs.id = p.gameSessionId
+WHERE gs.galaxyName = ‘Galaxy Name’
+ORDER BY p.turnOrder;
+
+-- Per-AI action breakdown (what each AI has actually done)
+SELECT p.name, tl.action, COUNT(*) as cnt
+FROM TurnLog tl
+JOIN Player p ON p.id = tl.playerId
+JOIN GameSession gs ON gs.id = p.gameSessionId
+WHERE gs.galaxyName = ‘Galaxy Name’ AND p.isAI = 1
+GROUP BY p.name, tl.action
+ORDER BY p.name, cnt DESC;
+
+-- Recent AI turns with LLM source (gemini vs fallback) — newest first
+SELECT p.name, tl.action,
+       JSON_UNQUOTE(JSON_EXTRACT(tl.details, ‘$.llmSource’)) as llm_source,
+       LEFT(JSON_UNQUOTE(JSON_EXTRACT(tl.details, ‘$.actionMsg’)), 80) as msg,
+       tl.createdAt
+FROM TurnLog tl
+JOIN Player p ON p.id = tl.playerId
+JOIN GameSession gs ON gs.id = p.gameSessionId
+WHERE gs.galaxyName = ‘Galaxy Name’ AND p.isAI = 1
+ORDER BY tl.createdAt DESC
+LIMIT 40;
+
+-- Check SystemSettings (Gemini key presence) and active UserAccounts
+SELECT CASE WHEN geminiApiKey IS NOT NULL THEN ‘HAS_KEY’ ELSE ‘NO_KEY’ END, geminiModel
+FROM SystemSettings;
+SELECT username FROM UserAccount;
+SELECT galaxyName, status FROM GameSession;
+```
+
+**TurnLog interpretation:** Each sequential-mode AI turn creates two TurnLog rows — the tick entry (action=`end_turn`, NULL llmSource, `tickReportDeferred: true`) and the actual AI action entry (llmSource=`gemini` or `fallback`). An AI that "always ends turn" may actually be making real decisions — check the non-NULL llmSource rows to see true action choices. The tick rows are not AI decisions.
 
 ### What the logs mean
 

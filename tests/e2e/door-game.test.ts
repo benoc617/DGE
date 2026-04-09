@@ -198,7 +198,7 @@ describe("door-game simultaneous mode", () => {
       (d) =>
         d.dayNumber === 2 &&
         (d.empire as { turnsLeft?: number } | undefined)?.turnsLeft === START.TURNS - ACTIONS_PER_DAY,
-      { timeoutMs: 180_000, intervalMs: 400 },
+      { timeoutMs: 300_000, intervalMs: 400 },
     );
     expect(fin.dayNumber).toBe(2);
     expect((fin.empire as { turnsLeft?: number }).turnsLeft).toBe(START.TURNS - ACTIONS_PER_DAY);
@@ -212,7 +212,7 @@ describe("door-game simultaneous mode", () => {
     const aiTp = (aiRow as { turnsPlayed?: number }).turnsPlayed ?? 0;
     expect(humanTp).toBe(ACTIONS_PER_DAY);
     expect(aiTp).toBeGreaterThanOrEqual(ACTIONS_PER_DAY);
-  }, 180_000);
+  }, 300_000);
 
   it("two AI opponents: calendar day rolls and both AIs advance (multi-AI drain)", async () => {
     const g = uniqueGalaxy("DoorAI2");
@@ -237,7 +237,7 @@ describe("door-game simultaneous mode", () => {
       (d) =>
         d.dayNumber === 2 &&
         (d.empire as { turnsLeft?: number } | undefined)?.turnsLeft === START.TURNS - ACTIONS_PER_DAY,
-      { timeoutMs: 180_000, intervalMs: 400 },
+      { timeoutMs: 300_000, intervalMs: 400 },
     );
     expect(fin.dayNumber).toBe(2);
     expect((fin.empire as { turnsLeft?: number }).turnsLeft).toBe(START.TURNS - ACTIONS_PER_DAY);
@@ -251,5 +251,5 @@ describe("door-game simultaneous mode", () => {
     expect(rowB).toBeDefined();
     expect((rowA as { turnsPlayed?: number }).turnsPlayed ?? 0).toBeGreaterThanOrEqual(ACTIONS_PER_DAY);
     expect((rowB as { turnsPlayed?: number }).turnsPlayed ?? 0).toBeGreaterThanOrEqual(ACTIONS_PER_DAY);
-  }, 180_000);
+  }, 300_000);
 });

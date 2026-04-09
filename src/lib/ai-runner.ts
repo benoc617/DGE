@@ -296,3 +296,30 @@ export async function runAISequence(
     },
   });
 }
+
+/**
+ * Milliseconds of inactivity on an AI's sequential turn before assuming the
+ * background promise was killed (e.g. server restart) and recovery is needed.
+ * 1.5× the default 60s Gemini timeout, so normal turns never trigger recovery.
+ */
+export const SEQUENTIAL_AI_STALE_MS = 90_000;
+
+/**
+ * Called from status polling to recover a sequential-mode AI turn that was
+ * abandoned mid-flight (e.g. after a server restart killed the fire-and-forget
+ * runAISequence promise).
+ *
+ * Atomically claims recovery by conditionally refreshing `GameSession.turnStartedAt`
+ * to now. If `turnStartedAt` is already fresh (< SEQUENTIAL_AI_STALE_MS ago),
+ * the conditional update matches 0 rows and this is a no-op — preventing
+ * duplicate recovery across multiple Next.js workers.
+ */
+export async function recoverSequentialAI(gameSessionId: string): Promise<void> {
+  const cutoff = new Date(Date.now() - SEQUENTIAL_AI_STALE_MS);
+  const { count } = await prisma.gameSession.updateMany({
+    where: { id: gameSessionId, turnStartedAt: { lt: cutoff } },
+    data: { turnStartedAt: new Date() },
+  });
+  if (count === 0) return; // Turn is fresh, or another worker already claimed recovery
+  void runAISequence(gameSessionId);
+}

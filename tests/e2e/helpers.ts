@@ -354,6 +354,23 @@ export async function resetSystemSettings() {
   await prisma.systemSettings.deleteMany();
 }
 
+/**
+ * Re-seed `SystemSettings` from environment variables.
+ * Call in afterEach/afterAll after a test that wipes SystemSettings, so
+ * manually-configured Gemini keys survive the test run.
+ */
+export async function restoreSystemSettingsFromEnv() {
+  const key = process.env.GEMINI_API_KEY?.trim();
+  if (!key) return; // nothing to restore; app will fall back to env at runtime
+  const model = (process.env.GEMINI_MODEL ?? "gemini-2.5-flash").trim();
+  const { prisma } = await import("@/lib/prisma");
+  await prisma.systemSettings.upsert({
+    where: { id: "default" },
+    create: { id: "default", geminiApiKey: key, geminiModel: model },
+    update: { geminiApiKey: key, geminiModel: model },
+  });
+}
+
 export async function adminGetSettings(cookie: string) {
   return adminFetch("/api/admin/settings", cookie);
 }
