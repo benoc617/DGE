@@ -143,8 +143,8 @@ describe("canPlayerAct", () => {
   });
 
   it("false when fullTurnsUsedThisRound >= actionsPerDay", () => {
-    expect(canPlayerAct({ fullTurnsUsedThisRound: 5 }, 5)).toBe(false);
-    expect(canPlayerAct({ fullTurnsUsedThisRound: 6 }, 5)).toBe(false);
+    expect(canPlayerAct({ fullTurnsUsedThisRound: 5, turnsLeft: 50 }, 5)).toBe(false);
+    expect(canPlayerAct({ fullTurnsUsedThisRound: 6, turnsLeft: 50 }, 5)).toBe(false);
   });
 
   it("false when turnsLeft is 0 (game over)", () => {
