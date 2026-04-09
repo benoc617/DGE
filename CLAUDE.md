@@ -45,10 +45,11 @@ If a command fails on the host, **do not** treat that as the project failing unt
 - **`ENGINE-SPEC.md`** — Complete engine specification (turn modes, AI, schema, auth, admin, help system). Update if you change engine-level mechanics, the `GameDefinition` interface, admin pages, or auth.
 - **`games/srx/docs/HOWTOPLAY.md`** — SRX player-facing game guide. Update if you change SRX game mechanics, actions, costs, strategies, or UI controls.
 - **`games/srx/docs/GAME-SPEC.md`** — SRX complete technical specification. Update if you change ANY SRX formula, constant, data model field, action type, tech tree entry, combat mechanic, or turn tick step. This is the authoritative SRX spec — it must always match the code.
+- **`games/chess/docs/GAME-SPEC.md`** — Chess technical specification. Update if you change chess rules, MCTS config, state persistence, or action handling.
 - **`CLAUDE.md`** — This file. Update if you change commands, architecture, key file roles, or add new conventions.
 - **`AGENTS.md`** — Cursor / editor agent rules. Update if you change container-only tooling policy, Next.js agent notices, or repo-wide agent constraints.
 
-**Before every commit, verify that all five markdown files reflect the current state of the codebase.** If a change only affects code style or non-functional refactoring, docs may not need updating — use judgment.
+**Before every commit, verify that all documentation files reflect the current state of the codebase.** If a change only affects code style or non-functional refactoring, docs may not need updating — use judgment.
 
 ## Test Sync Rule
 
@@ -191,6 +192,7 @@ npm run docker:test:all     # Unit then E2E in container
 | `combat-reporting.test.ts` | `message` + `actionDetails.combatResult` (pirate, guerrilla) |
 | `defender-alerts.test.ts` | Defender alert queue / ALERT lines |
 | `door-game.test.ts` | Door-game register/join, tick+action auto-close, concurrent lock (200+409), round rollover; **human+one AI** and **human+two AIs** (status polls drive AI drain; day rolls) |
+| `chess.test.ts` | Chess game registration, status with board, legal moves API, make move, AI response (MCTS), illegal move rejection, resign, game-over 410 |
 
 The **game-flow** AI test uses **one** AI opponent and a long timeout for Gemini when the key is set; local fallback still exercises the path.
 - **Agents:** use **`npm run docker:test:e2e`** (runs `test:e2e:only` inside `app` against :3000). Do not run host **`npm run test:e2e`** (boots a second dev server on :3005) unless the user explicitly asks.
@@ -322,15 +324,17 @@ This repo uses an **npm workspace monorepo** where game-agnostic infrastructure 
 | `packages/engine/` | `@dge/engine` | Runtime: `GameOrchestrator`, registry (`registerGame`, `requireGame`), MCTS search, turn management, AI runner, cache, DB lock |
 | `packages/shell/` | `@dge/shell` | React UI: `GameLayout`, `TurnIndicator`, `useGameState`, `useGameAction`, `GameUIConfig<TState>` |
 | `games/srx/` | `@dge/srx` | SRX game definition: `srxGameDefinition` implements `GameDefinition<SrxWorldState>` |
+| `games/chess/` | `@dge/chess` | Chess game definition: `chessGameDefinition` implements `GameDefinition<ChessState>` (MCTS-only AI, no Gemini) |
 
 ### Separation rules (must not violate)
 
 - **Engine never imports game code** — no references to `@/lib/game-engine`, `sim-state`, `door-game-turns`, etc.
 - **Shell never imports game components** — only `GameStateBase` and `GameUIConfig<TState>` are game-aware
 - **Game-specific hooks injected via interfaces** — `TurnOrderHooks` / `DoorGameHooks` let the engine call game persistence without knowing SRX
-- **Registration side-effect** — `src/lib/srx-registration.ts` wires SRX into the engine registry (definition + `GameMetadata` + `GameHttpAdapter` + hooks); imported via `src/lib/game-bootstrap.ts`
+- **Registration side-effects** — `src/lib/srx-registration.ts` wires SRX and `src/lib/chess-registration.ts` wires Chess into the engine registry (definition + `GameMetadata` + `GameHttpAdapter` + hooks); imported via `src/lib/game-bootstrap.ts`
 - **`src/lib/game-bootstrap.ts`** — single module that imports all game registration files; API routes import this once instead of individual game registration modules
 - **`src/lib/srx-http-adapter.ts`** — implements `GameHttpAdapter` for SRX; extracts game-specific payload construction from API routes (`buildStatus`, `buildLeaderboard`, `buildGameOver`, `getPlayerCreateData`, `onSessionCreated`, `computeHubTurnState`)
+- **`src/lib/chess-http-adapter.ts`** — implements `GameHttpAdapter` for Chess; `onSessionCreated` creates the AI player and stores initial board state in `GameSession.log`
 
 ### Help system (per game)
 
@@ -351,10 +355,14 @@ When updating game mechanics, update the help file alongside `games/{name}/docs/
 | SRX game spec | `games/srx/docs/GAME-SPEC.md` | All SRX formulas, constants, actions, combat, tech |
 | SRX how-to-play | `games/srx/docs/HOWTOPLAY.md` | Player-facing SRX guide |
 | SRX help (in-game) | `games/srx/src/help-content.ts` | In-game reference (served via API + HelpModal) |
+| Chess game spec | `games/chess/docs/GAME-SPEC.md` | Chess rules, MCTS AI, state persistence |
+| Chess help (in-game) | `games/chess/src/help-content.ts` | In-game reference for chess |
 | Agent instructions | `CLAUDE.md` | This file |
 | Editor agent rules | `AGENTS.md` | Container-only policy, Next.js agent notices |
 
-### Adding a second game
+### Adding a new game
+
+Chess (`games/chess/`) is the reference implementation of a second game. To add another:
 
 1. Create `games/{name}/src/definition.ts` implementing `GameDefinition<{Name}State>`
 2. Create `games/{name}/src/help-content.ts` with `HELP_REGISTRY` entry; add it to the `COMBINED_REGISTRY` in `src/app/api/game/help/route.ts`
@@ -364,15 +372,23 @@ When updating game mechanics, update the help file alongside `games/{name}/docs/
 6. Add a `src/lib/{name}-registration.ts` side-effect module that calls `registerGame("{name}", { definition, metadata, adapter, hooks })`
 7. Add one import to `src/lib/game-bootstrap.ts`: `import "@/lib/{name}-registration"` — all routes that import `game-bootstrap` will pick up the new game automatically
 8. Create `src/components/{Name}GameScreen.tsx` for the in-game UI; register it in `GAME_SCREEN_REGISTRY` and `CLIENT_GAME_REGISTRY` in `src/app/page.tsx`
-9. Add unit tests in `tests/unit/{name}-*.test.ts` and E2E tests in `tests/e2e/{name}-*.test.ts`
+9. Add path aliases to `tsconfig.json` for `@dge/{name}` and `@dge/{name}/*`
+10. Add `COPY games/{name}/package.json` to `Dockerfile.dev` before the `npm ci` step
+11. Add unit tests in `tests/unit/{name}-*.test.ts` and E2E tests in `tests/e2e/{name}-*.test.ts`
 
 ### Tests for engine and game code
 
 - **`tests/unit/registry.test.ts`** — covers `registerGame`, `getGame`, `requireGame`, `_clearRegistry`
 - **`tests/unit/orchestrator.test.ts`** — covers guard conditions, `canPlayerAct`, `sessionCannotHaveActiveTurn`
+- **`tests/unit/turn-order-hooks.test.ts`** — covers `TurnOrderHooks` interface contract
+- **`tests/unit/engine-door-game.test.ts`** — covers game-agnostic `openFullTurn` / `closeFullTurn`
+- **`tests/unit/srx-context-bridging.test.ts`** — covers `FullActionOptions.context` bridging in SRX definition
 - **`tests/unit/srx-game-definition.test.ts`** — covers SRX pure-track: `applyTick`, `applyAction`, `evalState`, `generateCandidateMoves`
 - **`tests/unit/door-game-turns.test.ts`** — covers door-game lifecycle (openFullTurn, closeFullTurn, tryRollRound)
 - **`tests/unit/turn-order-lobby.test.ts`** — covers `sessionCannotHaveActiveTurn` (sequential)
+- **`tests/unit/chess-rules.test.ts`** — covers all chess rules (move gen, check, checkmate, stalemate, castling, en passant, promotion, 50-move draw)
+- **`tests/unit/chess-mcts.test.ts`** — covers MCTS search functions for chess
+- **`tests/e2e/chess.test.ts`** — covers full chess game flow (register, status, moves, play, AI response, resign, game-over)
 - **`tests/e2e/`** — full-track sequential + door-game integration (game-flow, multiplayer, door-game, auth, admin)
 
 Shell React components (`GameLayout`, `TurnIndicator`) are integration-tested via the SRX E2E suite; dedicated unit tests would require a jsdom environment (not currently configured).
@@ -431,11 +447,11 @@ Solar Realms Extreme is a turn-based galactic empire management game (BBS-era So
 - `src/lib/sim-state.ts` — pure in-memory game state for search algorithms. `PureEmpireState`, `applyTick`, `applyAction`, `generateCandidateMoves`, `evalState` (includes research-potential and supply-pipeline deferred-value terms), `makeRng` (local mulberry32 seeded RNG), `cloneEmpire`, `empireFromPrisma`, `inferRolloutStrategy` (detects research/supply/military/etc. from planet composition), `pickRolloutMove` (strategy-aligned move selection for MCTS rollouts). No async, no DB, no global RNG mutation.
 - `src/lib/search-opponent.ts` — N-player MCTS (UCB1 + strategy-aligned rollout via `pickRolloutMove` + backprop) and shallow MaxN search. Configurable via `MCTSConfig` / `MaxNConfig`. Entry points: `mctsSearch`, `maxNMove`, `searchOpponentMove`, `buildSearchStates`.
 - `src/lib/door-game-ui.ts` — simultaneous mode: `simultaneousDoorCommandCenterDisabled` aligns Command Center `disabled` with the header (`canAct === false` vs undefined — avoids “TURN OPEN” with all actions grayed during a stale/partial status refresh).
-- `src/lib/door-game-turns.ts` — door-game mode: `openFullTurn`, `closeFullTurn`, `tryRollRound` (optional `scheduleAiDrain`; when true, calls `enqueueAiTurnsForSession` after `day_complete` to insert job-queue rows for the external ai-worker), `runOneDoorGameAI` (called by **ai-worker** to execute a single AI full turn), `canPlayerAct`; re-exports `enqueueAiTurnsForSession`, `withCommitLock` / `GalaxyBusyError` from `db-context`. Internal `drainDoorGameAiTurns` / `runDoorGameAITurns` are retained for simulation harness use (`scheduleAiDrain: false`). AI move decisions use batched parallel **`getAIMoveDecision`** + serial **`applyDoorGameAIMove`**; batch size / timeouts from **`resolveDoorAiRuntimeSettings()`** (`SystemSettings` + env). Ordering by **fewest `fullTurnsUsedThisRound`**, then `turnOrder`. **`src/lib/door-ai-runtime-settings.ts`** — effective door/Gemini concurrency caps; **`resolveDoorAiRuntimeSettings()`** uses a **~60s in-process cache** (invalidated on admin **`/api/admin/settings`** PATCH) so AI moves are not one Prisma query each. **`src/lib/ai-concurrency.ts`** — dynamic semaphores for Gemini / MCTS (`setAiConcurrencyCaps` from resolver; used by `gemini.ts` `getAIMove`).
+- `src/lib/door-game-turns.ts` — door-game mode: `openFullTurn`, `closeFullTurn`, `tryRollRound` (optional `scheduleAiDrain`; when true, calls `enqueueAiTurnsForSession` after `day_complete` to insert job-queue rows for the external ai-worker), `runOneDoorGameAI` (called by **ai-worker** to execute a single AI full turn), `canPlayerAct`; re-exports `enqueueAiTurnsForSession`, `withCommitLock` / `SessionBusyError` from `db-context`. Internal `drainDoorGameAiTurns` / `runDoorGameAITurns` are retained for simulation harness use (`scheduleAiDrain: false`). AI move decisions use batched parallel **`getAIMoveDecision`** + serial **`applyDoorGameAIMove`**; batch size / timeouts from **`resolveDoorAiRuntimeSettings()`** (`SystemSettings` + env). Ordering by **fewest `fullTurnsUsedThisRound`**, then `turnOrder`. **`src/lib/door-ai-runtime-settings.ts`** — effective door/Gemini concurrency caps; **`resolveDoorAiRuntimeSettings()`** uses a **~60s in-process cache** (invalidated on admin **`/api/admin/settings`** PATCH) so AI moves are not one Prisma query each. **`src/lib/ai-concurrency.ts`** — dynamic semaphores for Gemini / MCTS (`setAiConcurrencyCaps` from resolver; used by `gemini.ts` `getAIMove`).
 - `src/lib/redis.ts` — ioredis client (`getRedis()`); thin helpers `rGet`, `rSetEx`, `rDel`. Fail-open: if `REDIS_URL` is unset or Redis is unavailable, operations silently no-op. Used only for read-cache; MySQL is always authoritative.
 - `src/lib/game-state-service.ts` — cache-aside helpers: `getCachedPlayer(id)` (30 s TTL), `getCachedLeaderboard(sessionId)` (15 s TTL), `invalidatePlayer(id)`, `invalidateLeaderboard(sessionId)`, `invalidatePlayerAndLeaderboard`. Mutations (tick, action, ai-worker) call `invalidatePlayer` after DB commit so status polls don't serve stale `turnOpen` / `fullTurnsUsedThisRound`.
 - `src/lib/ai-job-queue.ts` — `AiTurnJob` CRUD: `enqueueAiTurnsForSession` (dedup: skips players with a pending/claimed job), `claimNextJob` (SKIP LOCKED), `completeJob`, `failJob`, `recoverStaleJobs` (resets claimed jobs older than threshold back to pending for crashed-worker recovery).
-- `src/lib/db-context.ts` — `getDb()` for Prisma client or interactive transaction; `withCommitLock(sessionId, fn)` uses `INSERT IGNORE SessionLock` + `SELECT … FOR UPDATE NOWAIT` (MySQL advisory lock).
+- `src/lib/db-context.ts` — re-exports `getDb`, `withCommitLock`, `SessionBusyError` from `@dge/engine/db-context`; registers the Prisma client with the engine. `withCommitLock(sessionId, fn)` uses `INSERT IGNORE SessionLock` + `SELECT … FOR UPDATE NOWAIT` (MySQL advisory lock). `GalaxyBusyError` is a deprecated alias for `SessionBusyError`.
 - `src/lib/turn-order.ts` — strict sequential turn system. `sessionCannotHaveActiveTurn()` encodes lobby / missing timer; `getCurrentTurn(sessionId)` returns **null** when `waitingForHuman` is true or `turnStartedAt` is null (admin lobby); otherwise resolves the current player (with timeout auto-skip). `advanceTurn(sessionId)` no-ops in lobby.
 - `src/lib/admin-auth.ts` — async `verifyAdminLogin` / `verifyAdminPassword` (DB `AdminSettings` or env password), `requireAdmin` — **valid signed httpOnly cookie** (`srx_admin_session`, see `admin-session.ts`) **or** **`Authorization: Basic`** (E2E, curl). Browser UI: `src/lib/admin-client-storage.ts` stores optional **username pref** only in `sessionStorage` (no password); **Log out** clears cookie + storage.
 - `src/lib/player-init.ts` — `createStarterPlanets()` and `createStarterEmpire()` — shared starter data for register, join, and AI player creation.
@@ -445,6 +461,10 @@ Solar Realms Extreme is a turn-based galactic empire management game (BBS-era So
 - `src/lib/prisma.ts` — Prisma 7 client with `@prisma/adapter-mariadb` (`DATABASE_URL` from env only).
 - `src/lib/system-settings.ts` — masked Gemini key preview for admin settings API (never return raw secrets).
 - `scripts/ai-worker.ts` — standalone long-running process (separate Compose service). Polls `AiTurnJob` via `claimNextJob` (SKIP LOCKED), calls `runOneDoorGameAI`, then cascades with `enqueueAiTurnsForSession`. Supports `AI_WORKER_CONCURRENCY` parallel slots. Recovers stale (crashed-worker) jobs every 30 s. Env: `DATABASE_URL`, `REDIS_URL`, `GEMINI_API_KEY`, `AI_WORKER_POLL_MS`, `AI_WORKER_CONCURRENCY`, `SRX_LOG_AI_TIMING`.
+- `src/lib/chess-http-adapter.ts` — `GameHttpAdapter` for chess; `buildStatus` returns board, move history, captured pieces; `onSessionCreated` creates the AI player and initial board state in `GameSession.log`.
+- `src/lib/chess-registration.ts` — registers chess `GameDefinition`, `GameMetadata`, and hooks with the engine; timeout auto-skip resigns the player.
+- `src/components/ChessGameScreen.tsx` — full in-game chess UI; interactive board (Unicode pieces), point-and-click moves with legal-move highlighting, promotion dialog, resign, captured pieces, AI polling.
+- `src/app/api/game/chess/moves/route.ts` — `GET /api/game/chess/moves?id=<playerId>` returns legal moves for the current position.
 - `scripts/simulate.ts` — CLI runner for the simulation engine. **`--reset` wipes ALL game data** (sessions, players, scores) — not just simulation artifacts. `--repeat N` only cleans simulation-specific players (`Sim_*`) between runs.
 
 ### Authentication & Lobby System
@@ -459,7 +479,7 @@ Solar Realms Extreme is a turn-based galactic empire management game (BBS-era So
 - **Public lobbies**: `GET /api/game/lobbies` returns active public games. `PATCH /api/game/session` toggles `isPublic` (creator-only); **`maxPlayers`** patch allowed **2–128**.
 - **Session info**: `GET /api/game/session?id=` returns session details including invite code.
 - **UI flow**: Login → **Command Center** (active games + Create / Join / Log out) **or** legacy login straight into game; **Create Galaxy** one screen (max players, name, visibility, timer, optional AI toggles; session password from login) → Play; Join → Play.
-- **Admin** (`/admin` + **`/admin/users`** + **`/admin/game-sessions`** + **`/admin/maintenance`**, link on login): `POST /api/admin/login` (sets **signed httpOnly session cookie**; `ADMIN_SESSION_SECRET` min 32 chars in production) | `POST /api/admin/logout` | `GET /api/admin/me` | `POST /api/admin/password` (change password → `AdminSettings` bcrypt + new cookie) | `GET/PATCH /api/admin/settings` (Gemini + door-game AI limits in `SystemSettings` including `mctsBudgetMs`/`compactAiPrompt`; `DATABASE_URL` env-only) | `GET/POST/DELETE /api/admin/galaxies` (DELETE body `{ ids }` removes sessions via `src/lib/delete-game-session.ts`) | **`GET/PATCH/DELETE /api/admin/users`** (list accounts + stats, force user password syncs `UserAccount` + linked `Player` hashes, delete account clears `Player.userId`) | **`GET/DELETE /api/admin/logs`** (GET: session log row counts; DELETE body `{ sessionId, force? }`: dump+purge TurnLog+GameEvent for that session; requires `force:true` for active sessions) | **`POST /api/admin/migrate`** (runs `prisma db push --accept-data-loss` inside the app process for hot schema patches) — **cookie or Basic** (`admin-auth.ts`). Username only from `ADMIN_USERNAME`; password from DB row or `INITIAL_ADMIN_PASSWORD` env. Pre-staged galaxies use `waitingForHuman` until first human `POST /api/game/join`.
+- **Admin** (`/admin` + **`/admin/game-sessions`** + **`/admin/users`** + **`/admin/maintenance`**, link on login): `POST /api/admin/login` (sets **signed httpOnly session cookie**; `ADMIN_SESSION_SECRET` min 32 chars in production) | `POST /api/admin/logout` | `GET /api/admin/me` | `POST /api/admin/password` (change password → `AdminSettings` bcrypt + new cookie) | `GET/PATCH /api/admin/settings` (Gemini + door-game AI limits in `SystemSettings` including `mctsBudgetMs`/`compactAiPrompt`; `DATABASE_URL` env-only) | `GET/POST/DELETE /api/admin/galaxies` (DELETE body `{ ids }` removes sessions via `src/lib/delete-game-session.ts`) | **`GET/PATCH/DELETE /api/admin/users`** (list accounts + stats, force user password syncs `UserAccount` + linked `Player` hashes, delete account clears `Player.userId`) | **`GET/DELETE /api/admin/logs`** (GET: session log row counts; DELETE body `{ sessionId, force? }`: dump+purge TurnLog+GameEvent for that session; requires `force:true` for active sessions) | **`POST /api/admin/migrate`** (runs `prisma db push --accept-data-loss` inside the app process for hot schema patches) — **cookie or Basic** (`admin-auth.ts`). Username only from `ADMIN_USERNAME`; password from DB row or `INITIAL_ADMIN_PASSWORD` env. Pre-staged galaxies use `waitingForHuman` until first human `POST /api/game/join`.
 
 ### Database schema highlights (`prisma/schema.prisma`)
 - `UserAccount` — optional global login (`username`, `fullName`, `email`, `passwordHash`, `lastLoginAt`); `Player.userId` links when the commander is registered
@@ -479,7 +499,7 @@ Solar Realms Extreme is a turn-based galactic empire management game (BBS-era So
 - `SessionLock` — per-session advisory lock support row. One row per active session; used by `withCommitLock` (`INSERT IGNORE` + `SELECT … FOR UPDATE NOWAIT`). Deleted by `deleteGameSession`.
 - `AdminSettings` singleton (`id = "admin"`) stores bcrypt admin password when set from `/admin`; if absent, `INITIAL_ADMIN_PASSWORD` env is used
 - `SystemSettings` singleton (`id = "default"`) stores optional `geminiApiKey`, `geminiModel`, and door-game AI fields (`doorAiDecideBatchSize`, `geminiMaxConcurrent`, `doorAiMaxConcurrentMcts`, `doorAiMoveTimeoutMs`, `mctsBudgetMs` nullable, `compactAiPrompt` boolean); `DATABASE_URL` stays in the environment only. `mctsBudgetMs` controls MCTS search budget for optimal persona (null → uses `MCTS_BUDGET_MS` env or 45000ms default); `compactAiPrompt` enables short Gemini prompts for testing.
-- `GameSession` tracks game sessions with `galaxyName` (unique), `createdBy`, `isPublic`, `inviteCode` (unique, auto-generated 8-char hex), `maxPlayers` (default **50**, max **128**), `currentTurnPlayerId` (whose turn it is, by player ID; null in admin lobby until first human), `turnStartedAt` (**nullable** — null in lobby, no timer), **`waitingForHuman`** (pre-staged admin galaxies until first human joins), `turnTimeoutSecs` (default 86400), **`turnMode`**, **`dayNumber`**, **`actionsPerDay`**, **`roundStartedAt`** (door-game round timer anchor), player list, status, and outcome. Players are linked via `Player.gameSessionId` and ordered by `Player.turnOrder`.
+- `GameSession` tracks game sessions with **`gameType`** (default `"srx"`; API field name is `game`), `galaxyName` (unique), `createdBy`, `isPublic`, `inviteCode` (unique, auto-generated 8-char hex), `maxPlayers` (default **50**, max **128**), `currentTurnPlayerId` (whose turn it is, by player ID; null in admin lobby until first human), `turnStartedAt` (**nullable** — null in lobby, no timer), **`waitingForHuman`** (pre-staged admin galaxies until first human joins), `turnTimeoutSecs` (default 86400), **`turnMode`**, **`dayNumber`**, **`actionsPerDay`**, **`roundStartedAt`** (door-game round timer anchor), **`log`** (Json?, stores game state for non-DB-model games like chess), **`status`** (`"active"` | `"complete"`), player list, and outcome. Players are linked via `Player.gameSessionId` and ordered by `Player.turnOrder`.
 
 ### Action types (all handled in game-engine.ts)
 - Economy: `buy_planet`, `set_tax_rate`, `set_sell_rates`, `set_supply_rates`
@@ -495,7 +515,7 @@ Solar Realms Extreme is a turn-based galactic empire management game (BBS-era So
 
 ## Repository
 
-- GitHub repo: https://github.com/benoc617/solar-realms-extreme
+- GitHub repo: https://github.com/benoc617/DGE
 - GitHub account: `benoc617` (use this account for all repo operations)
 - The `GITHUB_TOKEN` env var in `.zshrc` points to a different account (`boconnor_axoncorp`) and will override `gh` account switching if set — unset it before running `gh` commands: `unset GITHUB_TOKEN && gh ...`
 
@@ -503,6 +523,7 @@ Solar Realms Extreme is a turn-based galactic empire management game (BBS-era So
 - Single-page app in `src/app/page.tsx` — a **thin lobby shell** that handles login, signup, and game selection. Once a session is active it dispatches to the selected game's `GameScreen` component (registered in `GAME_SCREEN_REGISTRY`).
 - **`src/app/page.tsx` roles**: lobby only — authentication (`login`, `game-select`, `hub`, `join-game`, `create-galaxy` phases), reading `CLIENT_GAME_REGISTRY` (client-side mirror of `GameMetadata`) to render game cards and create-game forms dynamically, and dispatching to the correct `GameScreen`.
 - **`src/components/SrxGameScreen.tsx`** — owns the full SRX in-game UI (header, panels, polling, modals). Receives initial session props from `page.tsx` and manages all game state internally.
+- **`src/components/ChessGameScreen.tsx`** — owns the full chess in-game UI (interactive board, move selection, promotion, resign, captured pieces, AI polling). Registered in `GAME_SCREEN_REGISTRY` as the `chess` game's screen component.
 - **Screens flow**: Login (**Login** / **Sign up**) → Sign up form → Login → **Game Select** (cards from `CLIENT_GAME_REGISTRY`) → **Command Center / Hub** (your active games for the selected game + Create / Join / Log out) → **Create Galaxy** (dynamic options from `createOptions`) → `GameScreen`; OR Hub → Join → `GameScreen`. Legacy login (no `UserAccount`) goes straight into the game when a matching active player exists.
 - **`game` field** — all API responses use `game` (not `gameType`). The DB column remains `GameSession.gameType`; routes map it at the boundary.
 - **Login screen** (username + password) → **Login** or **Sign up**; link to **`/admin`**

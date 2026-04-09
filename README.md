@@ -2,7 +2,9 @@
 
 A multiplayer turn-based game engine built with Next.js, Prisma, MySQL, and Redis. Hosts multiple games from a single stack — each game implements a typed `GameDefinition` interface; the engine handles turn management, AI orchestration, persistence, lobbies, and the React shell.
 
-**Included game:** [Solar Realms Extreme (SRX)](games/srx/README.md) — a galactic empire management game.
+**Included games:**
+- [Solar Realms Extreme (SRX)](games/srx/README.md) — a galactic empire management game
+- [Chess](games/chess/README.md) — standard chess against an MCTS AI opponent
 
 ## Quick Start
 
@@ -72,6 +74,8 @@ Open [http://localhost:3000](http://localhost:3000). Operators: [http://localhos
 | [games/srx/README.md](games/srx/README.md) | SRX game overview — systems, UI, simulation |
 | [games/srx/docs/HOWTOPLAY.md](games/srx/docs/HOWTOPLAY.md) | SRX player-facing game guide |
 | [games/srx/docs/GAME-SPEC.md](games/srx/docs/GAME-SPEC.md) | SRX complete technical specification |
+| [games/chess/README.md](games/chess/README.md) | Chess game overview |
+| [games/chess/docs/GAME-SPEC.md](games/chess/docs/GAME-SPEC.md) | Chess technical specification |
 | [CLAUDE.md](CLAUDE.md) | AI assistant guidance — commands, architecture, container-only npm |
 | [AGENTS.md](AGENTS.md) | Cursor / editor agent rules |
 
@@ -89,6 +93,7 @@ packages/
                             useGameState, useGameAction, GameUIConfig<TState>
 games/
   srx/       @dge/srx     — Solar Realms Extreme game definition
+  chess/     @dge/chess   — Chess game definition (MCTS AI, no Gemini)
 src/
   app/                    — Next.js App Router (API routes + pages)
   components/             — Game-specific React components
@@ -109,7 +114,7 @@ src/
 
 **Sequential** — one player acts at a time in a fixed rotation. AI turns run fire-and-forget in the background after each human action; the status API detects and recovers stuck AI turns after 90 s (e.g. after a server restart).
 
-**Simultaneous (door-game)** — all players have a pool of daily full turns and can act in any order within the day. AIs run via the dedicated **ai-worker** container through a `AiTurnJob` job queue (SKIP LOCKED claiming, 5-minute stale recovery). `GET /api/game/status` drives `tryRollRound` to advance the calendar day once all slots are consumed or the round timer expires.
+**Simultaneous (door-game)** — all players have a pool of daily full turns and can act in any order within the day. AIs run via the dedicated **ai-worker** container through a `AiTurnJob` job queue (SKIP LOCKED claiming, 1-minute stale recovery). `GET /api/game/status` drives `tryRollRound` to advance the calendar day once all slots are consumed or the round timer expires.
 
 ### Adding a game
 

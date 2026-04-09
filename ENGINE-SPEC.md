@@ -27,6 +27,7 @@ packages/engine/    @dge/engine    — turn orchestration, AI, search, cache, db
 packages/shell/     @dge/shell     — React UI shell (hooks, layout, types)
 packages/shared/    @dge/shared    — shared types, RNG interface
 games/srx/          @dge/srx       — Solar Realms Extreme game definition + components
+games/chess/        @dge/chess     — Chess game definition (MCTS-only AI, no Gemini)
 src/                               — Next.js application (routes, pages, components)
   app/                             — Next.js App Router pages and API routes
   components/                      — shared React components (AdminNav, HelpModal, etc.)
@@ -180,7 +181,8 @@ All games register at application startup. Instead of importing each game's regi
 ```typescript
 // src/lib/game-bootstrap.ts — import this once in any API route
 import "@/lib/srx-registration";
-// import "@/lib/chess-registration";   ← add new games here
+import "@/lib/chess-registration";
+// add new games here
 ```
 
 Routes call `requireGame(game)` (where `game` comes from `GameSession.gameType` mapped to the `game` field in API responses) to retrieve the orchestrator, metadata, or adapter for the session's game type.
@@ -319,7 +321,7 @@ MCTS only calls **pure-track** functions. No DB access.
 
 ### 8.4 AI worker (`scripts/ai-worker.ts`)
 
-Standalone process (separate Compose service). Polls `AiTurnJob` via `SELECT … FOR UPDATE SKIP LOCKED`. Runs `runOneDoorGameAI`, then cascades with `enqueueAiTurnsForSession`. Supports `AI_WORKER_CONCURRENCY` parallel slots. Recovers stale jobs (reset claimed→pending) every 30s.
+Standalone process (separate Compose service). Polls `AiTurnJob` via `SELECT … FOR UPDATE SKIP LOCKED`. Runs `runOneDoorGameAI`, then cascades with `enqueueAiTurnsForSession`. Supports `AI_WORKER_CONCURRENCY` parallel slots. Recovers stale jobs (claimed > 1 minute, reset to pending) every 30s.
 
 ---
 
@@ -328,7 +330,7 @@ Standalone process (separate Compose service). Polls `AiTurnJob` via `SELECT …
 - `withCommitLock(sessionId, fn)` — per-session advisory lock
   - `INSERT IGNORE SessionLock` + `SELECT … FOR UPDATE NOWAIT`
   - Interactive transaction with 60s timeout
-  - Throws `GalaxyBusyError` (HTTP 409) on contention
+  - Throws `SessionBusyError` (HTTP 409) on contention
 - `getDb()` — returns current Prisma client (global or transaction-scoped via AsyncLocalStorage)
 - Action routes use the lock; all game state mutations inside the lock always see latest committed state
 
@@ -371,8 +373,10 @@ Game-specific tables (SRX): `Empire`, `Planet`, `Army`, `SupplyRates`, `Research
 
 ```
 GameSession {
-  id, galaxyName (unique), inviteCode (unique, 8-char hex)
+  id, gameType (default "srx"), galaxyName (unique), inviteCode (unique, 8-char hex)
   isPublic, waitingForHuman, maxPlayers (2–128, default 50)
+  log (Json?, stores game state for non-DB games like chess)
+  status (String, "active" | "complete")
   turnMode (sequential | simultaneous)
   currentTurnPlayerId (null in lobby)
   turnStartedAt (null in lobby, resets each advance)
@@ -404,13 +408,14 @@ GameSession {
 
 ## 13. Admin UI
 
-Three pages at `/admin`, `/admin/game-sessions`, `/admin/users`. All share `<AdminNav>` navigation:
+Four pages at `/admin`, `/admin/game-sessions`, `/admin/users`, `/admin/maintenance`. All share `<AdminNav>` navigation:
 
 | Box | Links to |
 |-----|---------|
 | ADMIN | `/admin` — settings, password change |
 | GAME SESSIONS | `/admin/game-sessions` — create/delete sessions |
 | USERS | `/admin/users` — list accounts, force password, delete |
+| MAINTENANCE | `/admin/maintenance` — log management, schema migration |
 | REFRESH | Reloads current page's data list |
 | LOG OUT | Clears cookie + client storage |
 | GAME | `/` — returns to game UI |
@@ -421,6 +426,8 @@ Admin API routes:
 - `GET/POST/DELETE /api/admin/galaxies` — session CRUD
 - `GET/PATCH/DELETE /api/admin/users` — user CRUD
 - `GET/PATCH /api/admin/settings` — Gemini / door-AI limits (SystemSettings)
+- `GET/DELETE /api/admin/logs` — session log row counts; dump+purge TurnLog+GameEvent
+- `POST /api/admin/migrate` — hot schema migration (`prisma db push`)
 - `POST /api/admin/login` | `POST /api/admin/logout` | `GET /api/admin/me` | `POST /api/admin/password`
 
 ---
@@ -435,7 +442,7 @@ export const HELP_REGISTRY: Record<string, { title: string; content: string }> =
 }
 ```
 
-`GET /api/game/help?game=srx` serves the content as JSON (`{ title, content }`).
+The help route (`src/app/api/game/help/route.ts`) merges all game registries into a single `COMBINED_REGISTRY`. `GET /api/game/help?game=srx` (or `?game=chess`) serves the content as JSON (`{ title, content }`).
 
 The help button (`?`) in the game header bar fetches and displays this content in `<HelpModal>`. Content is cached after the first fetch (no repeat API call within the same session).
 
@@ -505,7 +512,10 @@ Each `GameScreen` fully owns its in-game UI — panels, polling, actions, modals
 | Engine registry | Unit | `tests/unit/registry.test.ts` |
 | GameOrchestrator guards | Unit | `tests/unit/orchestrator.test.ts` |
 | Turn order logic | Unit | `tests/unit/turn-order-lobby.test.ts` |
+| Turn order hooks | Unit | `tests/unit/turn-order-hooks.test.ts` |
 | Door-game helpers | Unit | `tests/unit/door-game-turns.test.ts` |
+| Door-game engine (openFullTurn/closeFullTurn) | Unit | `tests/unit/engine-door-game.test.ts` |
+| SRX context bridging | Unit | `tests/unit/srx-context-bridging.test.ts` |
 | AI concurrency semaphores | Unit | `tests/unit/ai-concurrency.test.ts` |
 | AI runtime settings | Unit | `tests/unit/door-ai-runtime-settings.test.ts` |
 | RNG | Unit | `tests/unit/rng.test.ts` |
@@ -531,6 +541,14 @@ SRX-specific tests:
 | Defender alerts | E2E | `tests/e2e/defender-alerts.test.ts` |
 | Protection enforcement | E2E | `tests/e2e/protection.test.ts` |
 | Lobby flow | E2E | `tests/e2e/lobby.test.ts` |
+
+Chess-specific tests:
+
+| Area | Test type | File(s) |
+|------|-----------|---------|
+| Chess rules (move gen, check, mate, castling, en passant, promotion, draw) | Unit | `tests/unit/chess-rules.test.ts` |
+| Chess MCTS search functions | Unit | `tests/unit/chess-mcts.test.ts` |
+| Chess full game flow (register, status, moves, play, AI, resign, game-over) | E2E | `tests/e2e/chess.test.ts` |
 
 ---
 
