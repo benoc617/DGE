@@ -152,7 +152,6 @@ export async function createAIPlayersForSession(
       where: { name, gameSessionId },
     });
     if (existing) {
-      created.push(`${name} (already exists)`);
       continue;
     }
 
