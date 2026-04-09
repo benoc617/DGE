@@ -33,10 +33,14 @@ describe("getEffectiveDoorAiSettings", () => {
       geminiMaxConcurrent: 0,
       doorAiMaxConcurrentMcts: 100,
       doorAiMoveTimeoutMs: 50,
+      mctsBudgetMs: null,
+      compactAiPrompt: false,
+      aiWorkerConcurrency: 999,
     });
     expect(eff.doorAiDecideBatchSize).toBe(L.doorAiDecideBatchSize.max);
     expect(eff.geminiMaxConcurrent).toBe(L.geminiMaxConcurrent.min);
     expect(eff.doorAiMaxConcurrentMcts).toBe(L.doorAiMaxConcurrentMcts.max);
     expect(eff.doorAiMoveTimeoutMs).toBe(L.doorAiMoveTimeoutMs.min);
+    expect(eff.aiWorkerConcurrency).toBe(L.aiWorkerConcurrency.max);
   });
 });

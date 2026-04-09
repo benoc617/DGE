@@ -245,7 +245,6 @@ function logGetAIMoveTiming(payload: {
   source: "gemini" | "fallback";
   reason?: string;
 }) {
-  if (!shouldLogAiTiming()) return;
   console.info("[srx-ai]", JSON.stringify({ event: "getAIMove", ...payload }));
 }
 
@@ -337,10 +336,11 @@ async function localFallback(
   state: EmpireState,
   persona: string,
   ctx: AIMoveContext,
+  mctsBudgetMs?: number,
 ): Promise<{ action: string; target?: string; amount?: number; reasoning: string; opType?: number; [key: string]: unknown }> {
   // Optimal persona always uses MCTS (unchanged).
   if (persona.includes("Optimal") || persona.includes("optimal")) {
-    const mctsResult = await mctsLocalFallback(state, 45_000);
+    const mctsResult = await mctsLocalFallback(state, mctsBudgetMs ?? 45_000);
     if (mctsResult) return mctsResult as { action: string; reasoning: string; [key: string]: unknown };
   }
 
@@ -440,9 +440,10 @@ export async function getAIMove(
   gameEvents: string[],
   ctx: AIMoveContext,
 ): Promise<AIMoveResult> {
-  await resolveDoorAiRuntimeSettings();
+  const rtSettings = await resolveDoorAiRuntimeSettings();
   const tStart = performance.now();
   const state = empireState as EmpireState;
+  const compact = rtSettings.compactAiPrompt;
 
   const planetSummary: Record<string, number> = {};
   if (state?.planets) {
@@ -456,20 +457,23 @@ export async function getAIMove(
 
   const rivalBlock =
     ctx.rivalNames.length > 0
-      ? `RIVAL COMMANDERS:
-${ctx.rivalNames.map((n) => `- ${n}`).join("\n")}
-ATTACK / COVERT \`target\` — use ONLY these names (not under new-empire protection):
-${attackable.length > 0 ? attackable.map((n) => `- ${n}`).join("\n") : "- (none — do NOT use attack_* or covert_op vs players; use attack_pirates, economy, or end_turn)"}
-${
-  protectedRivals.length > 0
-    ? `PROTECTED (cannot attack or covert yet):\n${protectedRivals.map((n) => `- ${n}`).join("\n")}`
-    : ""
-}
-TREATY \`target\` — any name from RIVAL COMMANDERS above.
-YOUR NAME (never use as target): ${ctx.commanderName}`
-      : `NO OTHER EMPIRES IN SESSION — use economy/military buildup or end_turn only (no attack/covert targets).`;
+      ? `RIVALS: ${ctx.rivalNames.join(", ")}
+ATTACKABLE (use for attack_*/covert_op target): ${attackable.length > 0 ? attackable.join(", ") : "none"}${protectedRivals.length > 0 ? `\nPROTECTED (no attack/covert): ${protectedRivals.join(", ")}` : ""}
+YOUR NAME (never target yourself): ${ctx.commanderName}`
+      : `NO RIVALS — use economy/military/end_turn only.`;
 
-  const prompt = `You are an AI commander in Solar Realms Extreme, a turn-based galactic strategy game.
+  const empireBlock = `Credits:${state?.credits ?? 0} Food:${state?.food ?? 0} Ore:${state?.ore ?? 0} Fuel:${state?.fuel ?? 0} Pop:${state?.population ?? 0} Tax:${state?.taxRate ?? 30}% Civil:${state?.civilStatus ?? 0}/7 Worth:${state?.netWorth ?? 0} TurnsLeft:${state?.turnsLeft ?? 0} Protected:${state?.isProtected ? `Y(${state.protectionTurns})` : "N"}
+Planets:${JSON.stringify(planetSummary)} Army:Sol=${state?.army?.soldiers ?? 0} Gen=${state?.army?.generals ?? 0} Fig=${state?.army?.fighters ?? 0} Sta=${state?.army?.defenseStations ?? 0} LC=${state?.army?.lightCruisers ?? 0} HC=${state?.army?.heavyCruisers ?? 0} Cov=${state?.army?.covertAgents ?? 0} Eff=${state?.army?.effectiveness ?? 100}%
+Research:${state?.research?.accumulatedPoints ?? 0}pts ${state?.research?.unlockedTechIds?.length ?? 0} techs`;
+
+  const prompt = compact
+    ? `SRX AI. Persona: ${persona.split(".")[0]}. ${rivalBlock}
+STATE: ${empireBlock}
+EVENTS: ${gameEvents.slice(0, 4).join(" | ") || "none"}
+ACTIONS: buy_planet(type), set_tax_rate(rate), buy_soldiers/generals/fighters/stations/light_cruisers/heavy_cruisers/carriers/covert_agents(amount), attack_conventional/guerrilla/pirates, market_buy/sell(resource,amount), bank_loan(amount), covert_op(target,opType:0-9), discover_tech(techId), end_turn
+RULES: attack_*/covert_op target must be ATTACKABLE only. Need generals to attack. Respond ONLY with JSON:
+{"action":"...","type":"...","target":"...","amount":0,"opType":0,"rate":0,"techId":"...","reasoning":"..."}`
+    : `You are an AI commander in Solar Realms Extreme, a turn-based galactic strategy game.
 
 YOUR PERSONA:
 ${persona}
@@ -519,7 +523,7 @@ Respond ONLY with valid JSON:
 {"action": "action_name", "type": "value_if_buy_planet", "target": "name_if_attack", "amount": number_if_applicable, "opType": number_if_covert, "rate": number_if_set_tax, "techId": "id_if_discover", "reasoning": "brief tactical reasoning"}`;
 
   const runFallback = async (): Promise<AIMoveResult> => {
-    const raw = await localFallback(state, persona, ctx);
+    const raw = await localFallback(state, persona, ctx, rtSettings.mctsBudgetMs);
     return sanitizeAIMove(raw as Record<string, unknown>, ctx, "fallback");
   };
 

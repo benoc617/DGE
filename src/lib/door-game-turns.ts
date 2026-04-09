@@ -20,6 +20,7 @@ import {
 
 import { getDb } from "@/lib/db-context";
 import { runAndPersistTick, processAction, runEndgameSettlementTick, type TurnReport } from "@/lib/game-engine";
+import { dumpAndPurgeSessionLogsIfComplete } from "@/lib/session-log-export";
 import { invalidatePlayer, invalidateLeaderboard } from "@/lib/game-state-service";
 import { enqueueAiTurnsForSession } from "@/lib/ai-job-queue";
 import {
@@ -75,8 +76,9 @@ function makeSrxHooks(options?: { scheduleAiDrain?: boolean }): DoorGameHooks {
     async runTick(playerId, opts) {
       return runAndPersistTick(playerId, opts);
     },
-    async runEndgameTick(playerId) {
+    async runEndgameTick(playerId, sessionId) {
       await runEndgameSettlementTick(playerId);
+      dumpAndPurgeSessionLogsIfComplete(sessionId);
     },
     invalidatePlayer(playerId) {
       void invalidatePlayer(playerId);

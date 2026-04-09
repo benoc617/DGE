@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import {
   api,
   register,
@@ -13,11 +13,21 @@ import {
   completeDoorDaySlots,
   pollStatusUntil,
   scheduleTestGalaxyDeletion,
+  restoreSystemSettingsFromEnv,
+  setFastAiTestSettings,
   TEST_PASSWORD,
 } from "./helpers";
 import { ACTIONS_PER_DAY, START } from "../../src/lib/game-constants";
 
 describe("door-game simultaneous mode", () => {
+  beforeAll(async () => {
+    // Use short MCTS budget + compact prompts so AI-drain tests run fast.
+    await setFastAiTestSettings();
+  });
+  afterAll(async () => {
+    await restoreSystemSettingsFromEnv();
+  });
+
   it("two players use POST /action; full turns and round fields", async () => {
     const g = uniqueGalaxy("Door");
     const player1Name = uniqueName("Door1");

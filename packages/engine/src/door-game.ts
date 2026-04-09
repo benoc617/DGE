@@ -32,8 +32,10 @@ export interface DoorGameHooks {
   /**
    * Run the endgame settlement tick when a player's turnsLeft hits 0.
    * Called at the end of closeFullTurn and round-timeout forfeiture.
+   * `sessionId` is provided so the hook can trigger session-level cleanup
+   * (e.g. log export) once all players in the session are done.
    */
-  runEndgameTick(playerId: string): Promise<void>;
+  runEndgameTick(playerId: string, sessionId: string): Promise<void>;
 
   /**
    * Optional: fire-and-forget cache invalidation for a player's empire.
@@ -171,7 +173,7 @@ export async function closeFullTurn(
     select: { turnsLeft: true },
   });
   if (empAfter?.turnsLeft === 0) {
-    await hooks.runEndgameTick(playerId);
+    await hooks.runEndgameTick(playerId, sessionId);
   }
 
   hooks.invalidatePlayer?.(playerId);
@@ -240,7 +242,7 @@ export async function tryRollRound(
         },
       });
       if (newTurnsLeft === 0) {
-        await hooks.runEndgameTick(emp.playerId);
+        await hooks.runEndgameTick(emp.playerId, sessionId);
       }
       forgivenCount++;
     }

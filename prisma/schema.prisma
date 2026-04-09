@@ -316,6 +316,12 @@ model SystemSettings {
   doorAiMaxConcurrentMcts Int @default(1)
   /** Wall-clock ms per `getAIMoveDecision` race (door-game AI). */
   doorAiMoveTimeoutMs     Int @default(60000)
+  /** MCTS search budget in ms for optimal persona. Null = default (45000). Use lower values (e.g. 5000) for testing. */
+  mctsBudgetMs            Int?
+  /** Use compact (shorter) AI prompts — reduces token count. Useful for testing to avoid slow Gemini calls. */
+  compactAiPrompt         Boolean @default(false)
+  /** Max parallel jobs in the ai-worker process. Applies to the ai-worker container; changes take effect within ~60s. */
+  aiWorkerConcurrency     Int @default(4)
   updatedAt    DateTime @updatedAt
 }
 

@@ -5,7 +5,6 @@ import { CIVIL_STATUS_NAMES, PLANET_CONFIG } from "@/lib/game-constants";
 import { getCurrentTurn } from "@/lib/turn-order";
 import { tryRollRound, enqueueAiTurnsForSession } from "@/lib/door-game-turns";
 import { recoverSequentialAI, SEQUENTIAL_AI_STALE_MS } from "@/lib/ai-runner";
-import { logSrxTiming, msElapsed } from "@/lib/srx-timing";
 import { getCachedPlayer } from "@/lib/game-state-service";
 import bcrypt from "bcryptjs";
 
@@ -38,10 +37,6 @@ function findPlayerById(id: string) {
 }
 
 async function buildResponse(player: FullPlayer) {
-  const tBuild = performance.now();
-  let sessionLoadMs: number | undefined;
-  let rosterOrTurnMs: number | undefined;
-
   const e = player.empire!;
   const planetSummary: Record<string, number> = {};
   for (const p of e.planets) {
@@ -64,7 +59,6 @@ async function buildResponse(player: FullPlayer) {
   let roundEndsAt: string | null = null;
 
   if (player.gameSessionId) {
-    const tSess0 = performance.now();
     const sess = await prisma.gameSession.findUnique({
       where: { id: player.gameSessionId },
       select: {
@@ -77,7 +71,6 @@ async function buildResponse(player: FullPlayer) {
         turnStartedAt: true,
       },
     });
-    sessionLoadMs = msElapsed(tSess0);
     if (!sess) {
       /* session deleted */
     } else {
@@ -103,44 +96,29 @@ async function buildResponse(player: FullPlayer) {
       isYourTurn = canAct;
       currentTurnPlayer = null;
 
-      const roster0 = performance.now();
       const roster = await prisma.player.findMany({
         where: { gameSessionId: player.gameSessionId, empire: { turnsLeft: { gt: 0 } } },
         orderBy: { turnOrder: "asc" },
         select: { name: true, isAI: true },
       });
-      rosterOrTurnMs = msElapsed(roster0);
       turnOrder = roster.map((p) => ({ name: p.name, isAI: p.isAI }));
     } else if (sess) {
-      const turn0 = performance.now();
       const turn = await getCurrentTurn(player.gameSessionId);
-      rosterOrTurnMs = msElapsed(turn0);
       if (turn) {
         isYourTurn = turn.currentPlayerId === player.id;
         currentTurnPlayer = turn.currentPlayerName;
         turnDeadline = turn.turnDeadline;
         turnOrder = turn.order.map((p) => ({ name: p.name, isAI: p.isAI }));
       } else {
-        const roster0 = performance.now();
         const roster = await prisma.player.findMany({
           where: { gameSessionId: player.gameSessionId, empire: { turnsLeft: { gt: 0 } } },
           orderBy: { turnOrder: "asc" },
           select: { name: true, isAI: true },
         });
-        rosterOrTurnMs = msElapsed(roster0);
         turnOrder = roster.map((p) => ({ name: p.name, isAI: p.isAI }));
       }
     }
   }
-
-  logSrxTiming("status_buildResponse", {
-    playerId: player.id,
-    sessionId: player.gameSessionId,
-    turnMode,
-    totalMs: msElapsed(tBuild),
-    sessionLoadMs,
-    rosterOrTurnMs,
-  });
 
   return {
     player: { id: player.id, name: player.name, isAI: player.isAI },
@@ -223,7 +201,6 @@ async function buildResponse(player: FullPlayer) {
 
 // GET — unauthenticated status refresh (used after initial login, keyed by player ID)
 export async function GET(req: NextRequest) {
-  const tRoute = performance.now();
   const { searchParams } = new URL(req.url);
   const playerName = searchParams.get("player");
   const playerId = searchParams.get("id");
@@ -232,7 +209,6 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "player or id param required" }, { status: 400 });
   }
 
-  const tFind0 = performance.now();
   const player = playerId
     ? await getCachedPlayer(playerId, () => findPlayerById(playerId))
     : await prisma.player.findFirst({
@@ -240,21 +216,12 @@ export async function GET(req: NextRequest) {
         orderBy: { createdAt: "desc" },
         include: playerInclude,
       });
-  const findPlayerMs = msElapsed(tFind0);
 
   if (!player || !player.empire) {
     return NextResponse.json({ error: "Player not found" }, { status: 404 });
   }
 
-  const tBuild0 = performance.now();
   const body = await buildResponse(player);
-  const buildResponseMs = msElapsed(tBuild0);
-  logSrxTiming("status_get_route", {
-    playerId: player.id,
-    findPlayerMs,
-    buildResponseMs,
-    routeTotalMs: msElapsed(tRoute),
-  });
 
   // Non-blocking: after response is sent, check if round needs to roll and enqueue AI jobs.
   // tryRollRound handles day advancement + round timeout; enqueueAiTurnsForSession inserts
@@ -293,16 +260,13 @@ export async function GET(req: NextRequest) {
 
 // POST — authenticated login (resume game with password)
 export async function POST(req: NextRequest) {
-  const tRoute = performance.now();
   const { name, password } = await req.json();
 
   if (!name) {
     return NextResponse.json({ error: "Name is required" }, { status: 400 });
   }
 
-  const tFind0 = performance.now();
   const player = await findActivePlayer(name);
-  const findPlayerMs = msElapsed(tFind0);
 
   if (!player) {
     const finished = await prisma.player.findFirst({
@@ -336,15 +300,6 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  const tBuild0 = performance.now();
   const body = await buildResponse(player);
-  const buildResponseMs = msElapsed(tBuild0);
-  logSrxTiming("status_post_route", {
-    playerId: player.id,
-    findPlayerMs,
-    buildResponseMs,
-    routeTotalMs: msElapsed(tRoute),
-  });
-
   return NextResponse.json(body);
 }

@@ -12,7 +12,6 @@ import {
   getAIMove,
   AI_PERSONAS,
   computeRivalAttackTargets,
-  shouldLogAiTiming,
   type AIMoveContext,
   type AIMoveTiming,
 } from "@/lib/gemini";
@@ -223,20 +222,18 @@ async function runOneAI(
       },
     };
 
-    if (shouldLogAiTiming()) {
-      console.info(
-        "[srx-ai]",
-        JSON.stringify({
-          event: "runOneAI",
-          commander: playerName,
-          contextMs: Math.round(contextMs),
-          getAIMoveMs: Math.round(getAIMoveMs),
-          executeMs: Math.round(executeMs),
-          totalMs: Math.round(performance.now() - tTurn0),
-          llmSource: move.llmSource,
-        }),
-      );
-    }
+    console.info(
+      "[srx-ai]",
+      JSON.stringify({
+        event: "runOneAI",
+        commander: playerName,
+        contextMs: Math.round(contextMs),
+        getAIMoveMs: Math.round(getAIMoveMs),
+        executeMs: Math.round(executeMs),
+        totalMs: Math.round(performance.now() - tTurn0),
+        llmSource: move.llmSource,
+      }),
+    );
 
     const displayMessage =
       finalResult.success && skipped && invalidMessage

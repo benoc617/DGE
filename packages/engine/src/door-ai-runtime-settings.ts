@@ -14,6 +14,8 @@ export const DEFAULT_DOOR_AI_DECIDE_BATCH_SIZE = 4;
 export const DEFAULT_GEMINI_MAX_CONCURRENT = 4;
 export const DEFAULT_DOOR_AI_MAX_CONCURRENT_MCTS = 1;
 export const DEFAULT_DOOR_AI_MOVE_TIMEOUT_MS = 60_000;
+export const DEFAULT_MCTS_BUDGET_MS = 45_000;
+export const DEFAULT_AI_WORKER_CONCURRENCY = 4;
 
 /** Valid ranges for admin PATCH and env fallbacks (single source of truth). */
 export const DOOR_AI_ADMIN_LIMITS = {
@@ -21,6 +23,8 @@ export const DOOR_AI_ADMIN_LIMITS = {
   geminiMaxConcurrent: { min: 1, max: 64 },
   doorAiMaxConcurrentMcts: { min: 1, max: 64 },
   doorAiMoveTimeoutMs: { min: 1000, max: 300_000 },
+  mctsBudgetMs: { min: 1000, max: 300_000 },
+  aiWorkerConcurrency: { min: 1, max: 64 },
 } as const;
 
 function parsePositiveInt(raw: string | undefined, fallback: number): number {
@@ -49,6 +53,9 @@ export type EffectiveDoorAiSettings = {
   geminiMaxConcurrent: number;
   doorAiMaxConcurrentMcts: number;
   doorAiMoveTimeoutMs: number;
+  mctsBudgetMs: number;
+  compactAiPrompt: boolean;
+  aiWorkerConcurrency: number;
 };
 
 /** Prisma `SystemSettings` shape for door AI ints (nullable row uses env + defaults). */
@@ -57,6 +64,9 @@ export type SystemSettingsDoorAiRow = {
   geminiMaxConcurrent: number;
   doorAiMaxConcurrentMcts: number;
   doorAiMoveTimeoutMs: number;
+  mctsBudgetMs: number | null;
+  compactAiPrompt: boolean;
+  aiWorkerConcurrency: number;
 } | null;
 
 /**
@@ -87,6 +97,17 @@ export function getEffectiveDoorAiSettings(row: SystemSettingsDoorAiRow): Effect
         L.doorAiMoveTimeoutMs.min,
         L.doorAiMoveTimeoutMs.max,
       ),
+      mctsBudgetMs: clampInt(
+        row.mctsBudgetMs ?? DEFAULT_MCTS_BUDGET_MS,
+        L.mctsBudgetMs.min,
+        L.mctsBudgetMs.max,
+      ),
+      compactAiPrompt: row.compactAiPrompt,
+      aiWorkerConcurrency: clampInt(
+        row.aiWorkerConcurrency,
+        L.aiWorkerConcurrency.min,
+        L.aiWorkerConcurrency.max,
+      ),
     };
   }
   return {
@@ -112,6 +133,17 @@ export function getEffectiveDoorAiSettings(row: SystemSettingsDoorAiRow): Effect
       parsePositiveInt(process.env.DOOR_AI_MOVE_TIMEOUT_MS, DEFAULT_DOOR_AI_MOVE_TIMEOUT_MS),
       L.doorAiMoveTimeoutMs.min,
       L.doorAiMoveTimeoutMs.max,
+    ),
+    mctsBudgetMs: clampInt(
+      parsePositiveInt(process.env.MCTS_BUDGET_MS, DEFAULT_MCTS_BUDGET_MS),
+      L.mctsBudgetMs.min,
+      L.mctsBudgetMs.max,
+    ),
+    compactAiPrompt: process.env.AI_COMPACT_PROMPT === "1" || process.env.AI_COMPACT_PROMPT === "true",
+    aiWorkerConcurrency: clampInt(
+      parsePositiveInt(process.env.AI_WORKER_CONCURRENCY, DEFAULT_AI_WORKER_CONCURRENCY),
+      L.aiWorkerConcurrency.min,
+      L.aiWorkerConcurrency.max,
     ),
   };
 }
@@ -142,6 +174,9 @@ export async function resolveDoorAiRuntimeSettings(): Promise<EffectiveDoorAiSet
       geminiMaxConcurrent: true,
       doorAiMaxConcurrentMcts: true,
       doorAiMoveTimeoutMs: true,
+      mctsBudgetMs: true,
+      compactAiPrompt: true,
+      aiWorkerConcurrency: true,
     },
   });
   const eff = getEffectiveDoorAiSettings(row);

@@ -24,6 +24,9 @@ export async function GET(req: NextRequest) {
         geminiMaxConcurrent: row.geminiMaxConcurrent,
         doorAiMaxConcurrentMcts: row.doorAiMaxConcurrentMcts,
         doorAiMoveTimeoutMs: row.doorAiMoveTimeoutMs,
+        mctsBudgetMs: row.mctsBudgetMs,
+        compactAiPrompt: row.compactAiPrompt,
+        aiWorkerConcurrency: row.aiWorkerConcurrency,
       }
     : null;
   const door = getEffectiveDoorAiSettings(doorRow);
@@ -36,6 +39,9 @@ export async function GET(req: NextRequest) {
     geminiMaxConcurrent: door.geminiMaxConcurrent,
     doorAiMaxConcurrentMcts: door.doorAiMaxConcurrentMcts,
     doorAiMoveTimeoutMs: door.doorAiMoveTimeoutMs,
+    mctsBudgetMs: door.mctsBudgetMs,
+    compactAiPrompt: door.compactAiPrompt,
+    aiWorkerConcurrency: door.aiWorkerConcurrency,
   });
 }
 
@@ -77,6 +83,9 @@ export async function PATCH(req: NextRequest) {
         geminiMaxConcurrent: existing.geminiMaxConcurrent,
         doorAiMaxConcurrentMcts: existing.doorAiMaxConcurrentMcts,
         doorAiMoveTimeoutMs: existing.doorAiMoveTimeoutMs,
+        mctsBudgetMs: existing.mctsBudgetMs,
+        compactAiPrompt: existing.compactAiPrompt,
+        aiWorkerConcurrency: existing.aiWorkerConcurrency,
       }
     : null;
   const cur = getEffectiveDoorAiSettings(doorRow);
@@ -86,6 +95,9 @@ export async function PATCH(req: NextRequest) {
   let geminiMaxConcurrent = cur.geminiMaxConcurrent;
   let doorAiMaxConcurrentMcts = cur.doorAiMaxConcurrentMcts;
   let doorAiMoveTimeoutMs = cur.doorAiMoveTimeoutMs;
+  let mctsBudgetMs: number | null = existing?.mctsBudgetMs ?? null;
+  let compactAiPrompt = cur.compactAiPrompt;
+  let aiWorkerConcurrency = cur.aiWorkerConcurrency;
 
   if ("doorAiDecideBatchSize" in body && body.doorAiDecideBatchSize !== undefined) {
     doorAiDecideBatchSize = parseAdminDoorAiInt(
@@ -119,6 +131,24 @@ export async function PATCH(req: NextRequest) {
       L.doorAiMoveTimeoutMs.max,
     );
   }
+  if ("mctsBudgetMs" in body) {
+    if (body.mctsBudgetMs === null) {
+      mctsBudgetMs = null;
+    } else if (body.mctsBudgetMs !== undefined) {
+      mctsBudgetMs = parseAdminDoorAiInt(body.mctsBudgetMs, cur.mctsBudgetMs, L.mctsBudgetMs.min, L.mctsBudgetMs.max);
+    }
+  }
+  if ("compactAiPrompt" in body && body.compactAiPrompt !== undefined) {
+    compactAiPrompt = Boolean(body.compactAiPrompt);
+  }
+  if ("aiWorkerConcurrency" in body && body.aiWorkerConcurrency !== undefined) {
+    aiWorkerConcurrency = parseAdminDoorAiInt(
+      body.aiWorkerConcurrency,
+      cur.aiWorkerConcurrency,
+      L.aiWorkerConcurrency.min,
+      L.aiWorkerConcurrency.max,
+    );
+  }
 
   await prisma.systemSettings.upsert({
     where: { id: "default" },
@@ -130,6 +160,9 @@ export async function PATCH(req: NextRequest) {
       geminiMaxConcurrent,
       doorAiMaxConcurrentMcts,
       doorAiMoveTimeoutMs,
+      mctsBudgetMs,
+      compactAiPrompt,
+      aiWorkerConcurrency,
     },
     update: {
       geminiApiKey,
@@ -138,6 +171,9 @@ export async function PATCH(req: NextRequest) {
       geminiMaxConcurrent,
       doorAiMaxConcurrentMcts,
       doorAiMoveTimeoutMs,
+      mctsBudgetMs,
+      compactAiPrompt,
+      aiWorkerConcurrency,
     },
   });
 

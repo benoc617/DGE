@@ -32,10 +32,10 @@ import {
   enqueueAiTurnsForSession,
 } from "../src/lib/ai-job-queue";
 import { runOneDoorGameAI } from "../src/lib/door-game-turns";
+import { resolveDoorAiRuntimeSettings } from "../src/lib/door-ai-runtime-settings";
 
 const WORKER_ID = crypto.randomUUID();
 const POLL_INTERVAL_MS = parseInt(process.env.AI_WORKER_POLL_MS ?? "500", 10);
-const CONCURRENCY = Math.max(1, parseInt(process.env.AI_WORKER_CONCURRENCY ?? "1", 10));
 const STALE_RECOVERY_INTERVAL_MS = 30_000;
 const STALE_THRESHOLD_MS = 5 * 60 * 1000;
 
@@ -81,8 +81,9 @@ async function tick(workerId: string): Promise<boolean> {
 }
 
 async function runWorker(): Promise<void> {
+  const initialSettings = await resolveDoorAiRuntimeSettings();
   console.log(
-    `[ai-worker] starting id=${WORKER_ID} concurrency=${CONCURRENCY} poll=${POLL_INTERVAL_MS}ms`,
+    `[ai-worker] starting id=${WORKER_ID} concurrency=${initialSettings.aiWorkerConcurrency} (admin-configurable) poll=${POLL_INTERVAL_MS}ms`,
   );
 
   let lastRecovery = 0;
@@ -99,8 +100,12 @@ async function runWorker(): Promise<void> {
         lastRecovery = now;
       }
 
-      // Run up to CONCURRENCY jobs in parallel
-      const slots = Array.from({ length: CONCURRENCY }, () => tick(WORKER_ID));
+      // Read concurrency from DB (cached ~60s) so admin changes apply without restart.
+      const settings = await resolveDoorAiRuntimeSettings();
+      const concurrency = settings.aiWorkerConcurrency;
+
+      // Run up to concurrency jobs in parallel
+      const slots = Array.from({ length: concurrency }, () => tick(WORKER_ID));
       const results = await Promise.all(slots);
       const anyWork = results.some(Boolean);
 

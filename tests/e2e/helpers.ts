@@ -361,13 +361,20 @@ export async function resetSystemSettings() {
  */
 export async function restoreSystemSettingsFromEnv() {
   const key = process.env.GEMINI_API_KEY?.trim();
-  if (!key) return; // nothing to restore; app will fall back to env at runtime
   const model = (process.env.GEMINI_MODEL ?? "gemini-2.5-flash").trim();
   const { prisma } = await import("@/lib/prisma");
+  if (!key) {
+    // No key to restore — just reset test-mode AI flags if a row exists.
+    await prisma.systemSettings.updateMany({
+      where: { id: "default" },
+      data: { mctsBudgetMs: null, compactAiPrompt: false, doorAiMoveTimeoutMs: 60_000 },
+    });
+    return;
+  }
   await prisma.systemSettings.upsert({
     where: { id: "default" },
     create: { id: "default", geminiApiKey: key, geminiModel: model },
-    update: { geminiApiKey: key, geminiModel: model },
+    update: { geminiApiKey: key, geminiModel: model, mctsBudgetMs: null, compactAiPrompt: false, doorAiMoveTimeoutMs: 60_000 },
   });
 }
 
@@ -396,6 +403,31 @@ export async function adminSetUserPassword(cookie: string, userId: string, newPa
 export async function adminDeleteUser(cookie: string, userId: string) {
   return adminFetch(`/api/admin/users?id=${encodeURIComponent(userId)}`, cookie, {
     method: "DELETE",
+  });
+}
+
+export async function adminGetLogs(cookie: string) {
+  return adminFetch("/api/admin/logs", cookie);
+}
+
+export async function adminPurgeLogs(cookie: string, sessionId: string, force = false) {
+  return adminFetch("/api/admin/logs", cookie, {
+    method: "DELETE",
+    body: JSON.stringify({ sessionId, force }),
+  });
+}
+
+/**
+ * Set AI settings optimised for fast E2E test runs: short MCTS budget + compact prompts.
+ * Call in beforeAll for AI-heavy tests; restore with restoreSystemSettingsFromEnv in afterAll.
+ */
+export async function setFastAiTestSettings(): Promise<void> {
+  const { cookie } = await adminLogin();
+  if (!cookie) return;
+  await adminPatchSettings(cookie, {
+    mctsBudgetMs: 5000,
+    compactAiPrompt: true,
+    doorAiMoveTimeoutMs: 15_000,
   });
 }
 

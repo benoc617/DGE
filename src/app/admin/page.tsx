@@ -35,6 +35,7 @@ export default function AdminPage() {
   const [intGeminiMaxConcurrent, setIntGeminiMaxConcurrent] = useState(4);
   const [intDoorAiMaxConcurrentMcts, setIntDoorAiMaxConcurrentMcts] = useState(1);
   const [intDoorAiMoveTimeoutMs, setIntDoorAiMoveTimeoutMs] = useState(60_000);
+  const [intAiWorkerConcurrency, setIntAiWorkerConcurrency] = useState(4);
   const [intLoading, setIntLoading] = useState(false);
   const [intError, setIntError] = useState("");
   const [intOk, setIntOk] = useState(false);
@@ -75,6 +76,7 @@ export default function AdminPage() {
     setIntGeminiMaxConcurrent(n(data.geminiMaxConcurrent, 4));
     setIntDoorAiMaxConcurrentMcts(n(data.doorAiMaxConcurrentMcts, 1));
     setIntDoorAiMoveTimeoutMs(n(data.doorAiMoveTimeoutMs, 60_000));
+    setIntAiWorkerConcurrency(n(data.aiWorkerConcurrency, 4));
   }, []);
 
   useEffect(() => {
@@ -163,6 +165,7 @@ export default function AdminPage() {
       geminiMaxConcurrent: intGeminiMaxConcurrent,
       doorAiMaxConcurrentMcts: intDoorAiMaxConcurrentMcts,
       doorAiMoveTimeoutMs: intDoorAiMoveTimeoutMs,
+      aiWorkerConcurrency: intAiWorkerConcurrency,
     };
     if (intGeminiKey.trim()) body.geminiApiKey = intGeminiKey.trim();
     const res = await fetch(
@@ -308,6 +311,10 @@ export default function AdminPage() {
             → <Link href="/admin/users" className="underline hover:text-green-400">Users</Link>
             {" "}to view accounts, force password resets, and delete user records.
           </p>
+          <p className="text-green-600">
+            → <Link href="/admin/maintenance" className="underline hover:text-green-400">Maintenance</Link>
+            {" "}to sync the database schema, view session log counts, and purge old logs.
+          </p>
         </div>
       </div>
 
@@ -380,6 +387,15 @@ export default function AdminPage() {
             className="w-full bg-black border border-green-800 text-green-300 px-2 py-1 text-sm"
             value={intDoorAiMoveTimeoutMs}
             onChange={(e) => setIntDoorAiMoveTimeoutMs(Number(e.target.value))}
+          />
+          <label className="text-green-700 block">AI worker concurrency (1–64) — parallel jobs in the ai-worker process; takes effect within ~60s</label>
+          <input
+            type="number"
+            min={1}
+            max={64}
+            className="w-full bg-black border border-green-800 text-green-300 px-2 py-1 text-sm"
+            value={intAiWorkerConcurrency}
+            onChange={(e) => setIntAiWorkerConcurrency(Number(e.target.value))}
           />
           <div className="flex flex-wrap gap-2 pt-2">
             <button

@@ -11,7 +11,7 @@ import Link from "next/link";
 
 interface AdminNavProps {
   /** Which admin section is currently active — grays out that nav item. */
-  current: "admin" | "game-sessions" | "users";
+  current: "admin" | "game-sessions" | "users" | "maintenance";
   /**
    * Called when the Refresh button is clicked.
    * Pass null to gray out the Refresh button (pages without a list to reload).
@@ -76,6 +76,11 @@ export function AdminNav({ current, onRefresh, onLogout }: AdminNavProps) {
         label="USERS"
         href={current === "users" ? undefined : "/admin/users"}
         disabled={current === "users"}
+      />
+      <NavBox
+        label="MAINTENANCE"
+        href={current === "maintenance" ? undefined : "/admin/maintenance"}
+        disabled={current === "maintenance"}
       />
       <NavBox
         label="REFRESH"

@@ -16,6 +16,7 @@ import { formatUnitLosses, formatUnitLossesOrNone } from "./combat-loss-format";
 import { defenderCovertAlertMessage, executeCovertOp } from "./espionage";
 import { getAvailableTech, getTech, TECH_TREE, RANDOM_EVENTS, type TechEffect } from "./research";
 import { targetHasNewEmpireProtection } from "./empire-protection";
+import { dumpAndPurgeSessionLogsIfComplete } from "./session-log-export";
 
 async function emitGameEvent(
   player: { gameSessionId: string | null | undefined },
@@ -2155,6 +2156,9 @@ export async function processAction(
     !options?.skipEndgameSettlement
   ) {
     await runEndgameSettlementTick(playerId);
+    if (player.gameSessionId) {
+      dumpAndPurgeSessionLogsIfComplete(player.gameSessionId);
+    }
   }
 
   return {
