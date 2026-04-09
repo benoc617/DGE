@@ -5,6 +5,7 @@ import Link from "next/link";
 import { SESSION } from "@/lib/game-constants";
 import { apiFetch } from "@/lib/client-fetch";
 import { SrxGameScreen } from "@/components/SrxGameScreen";
+import { ChessGameScreen } from "@/components/ChessGameScreen";
 // Re-export GameState so existing imports from "@/app/page" keep working.
 export type { GameState } from "@/lib/srx-game-types";
 
@@ -91,8 +92,13 @@ const CLIENT_GAME_REGISTRY: ClientGameMetadata[] = [
       },
     ],
   },
-  // Future games:
-  // { game: "chess", displayName: "Chess", ... }
+  {
+    game: "chess",
+    displayName: "Chess",
+    description: "Classic chess against an MCTS AI opponent. No Gemini — pure local computation.",
+    supportsJoin: false,
+    createOptions: [],
+  },
 ];
 
 function getGameMeta(game: string): ClientGameMetadata {
@@ -156,7 +162,7 @@ type GameScreenProps = {
 
 const GAME_SCREEN_REGISTRY: Record<string, React.ComponentType<GameScreenProps>> = {
   srx: SrxGameScreen,
-  // chess: ChessGameScreen,
+  chess: ChessGameScreen,
 };
 
 // ---------------------------------------------------------------------------

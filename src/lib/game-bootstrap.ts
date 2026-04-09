@@ -12,5 +12,4 @@
  */
 
 import "@/lib/srx-registration";
-// Future games:
-// import "@/lib/chess-registration";
+import "@/lib/chess-registration";

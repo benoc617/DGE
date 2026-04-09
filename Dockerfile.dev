@@ -9,6 +9,11 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 
 COPY package.json package-lock.json ./
+COPY packages/shared/package.json ./packages/shared/package.json
+COPY packages/engine/package.json ./packages/engine/package.json
+COPY packages/shell/package.json ./packages/shell/package.json
+COPY games/srx/package.json ./games/srx/package.json
+COPY games/chess/package.json ./games/chess/package.json
 COPY scripts/fix-tsc-bin.js ./scripts/fix-tsc-bin.js
 COPY prisma ./prisma
 COPY prisma.config.ts ./

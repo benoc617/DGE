@@ -38,7 +38,9 @@
       "@dge/shell": ["./packages/shell/src/index.ts"],
       "@dge/shell/*": ["./packages/shell/src/*"],
       "@dge/srx": ["./games/srx/src/index.ts"],
-      "@dge/srx/*": ["./games/srx/src/*"]
+      "@dge/srx/*": ["./games/srx/src/*"],
+      "@dge/chess": ["./games/chess/src/index.ts"],
+      "@dge/chess/*": ["./games/chess/src/*"]
     }
   },
   "include": [

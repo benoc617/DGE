@@ -1,5 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { HELP_REGISTRY as SRX_HELP_REGISTRY } from "@dge/srx/help-content";
+import { HELP_REGISTRY as CHESS_HELP_REGISTRY } from "@dge/chess/help-content";
 
 /**
  * GET /api/game/help?game=srx
@@ -7,14 +8,11 @@ import { HELP_REGISTRY as SRX_HELP_REGISTRY } from "@dge/srx/help-content";
  * Returns help content (title + markdown body) for the specified game type.
  * Served from the pre-compiled TypeScript string in each game's help-content.ts —
  * no filesystem reads at runtime.
- *
- * To add help for a new game, import its HELP_REGISTRY and spread it into COMBINED_REGISTRY.
  */
 
 const COMBINED_REGISTRY: Record<string, { title: string; content: string }> = {
   ...SRX_HELP_REGISTRY,
-  // Future games:
-  // ...CHESS_HELP_REGISTRY,
+  ...CHESS_HELP_REGISTRY,
 };
 
 export async function GET(req: NextRequest) {
