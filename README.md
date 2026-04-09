@@ -74,14 +74,15 @@ Open [http://localhost:3000](http://localhost:3000) to play. Operators can open 
 
 | Document | Description |
 |----------|-------------|
-| [HOWTOPLAY.md](HOWTOPLAY.md) | Player-facing game guide — strategies, controls, how everything works |
-| [GAME-SPEC.md](GAME-SPEC.md) | Complete technical specification — every formula, constant, and data model. Enough to rebuild the game from scratch. |
+| [ENGINE-SPEC.md](ENGINE-SPEC.md) | Door Game Engine specification — turn modes, AI, schema, auth, admin, help system |
+| [games/srx/docs/HOWTOPLAY.md](games/srx/docs/HOWTOPLAY.md) | SRX player-facing game guide — strategies, controls, how everything works |
+| [games/srx/docs/GAME-SPEC.md](games/srx/docs/GAME-SPEC.md) | SRX complete technical specification — every formula, constant, and data model. Enough to rebuild the game from scratch. |
 | [CLAUDE.md](CLAUDE.md) | AI assistant guidance — commands, architecture, conventions (includes **container-only** npm for agents) |
 | [AGENTS.md](AGENTS.md) | Cursor / editor agent rules — Docker-only tooling notice |
 
 ## What Is This Game?
 
-You manage an interstellar empire across **100 turns**. Each turn you take one action — buy planets, recruit military, attack rivals, conduct espionage, trade on the market, research technology, or adjust your economy — then your empire ticks forward: resources are produced and consumed, population grows or shrinks, maintenance is paid, and random events may occur. The player with the highest **net worth** at the end wins. **Optional simultaneous-turn** galaxies use **door-game** rounds: up to **five full turns per calendar day** (tick → one action per full turn, auto-closed on the server; use **Skip** to end without acting); **each** full turn consumes **one** of your **100** `turnsLeft` (not once per calendar day). Humans and AIs can all play during the round; AIs run in the background (after each new day the server kicks a full AI drain once the galaxy transaction has committed; mid-round catch-up still uses background runs), and a **round timer** skips unused full turns when it expires — each skipped slot also consumes `turnsLeft` — so the calendar advances (see `HOWTOPLAY.md`). The default remains **sequential** one-player-at-a-time turns.
+You manage an interstellar empire across **100 turns**. Each turn you take one action — buy planets, recruit military, attack rivals, conduct espionage, trade on the market, research technology, or adjust your economy — then your empire ticks forward: resources are produced and consumed, population grows or shrinks, maintenance is paid, and random events may occur. The player with the highest **net worth** at the end wins. **Optional simultaneous-turn** galaxies use **door-game** rounds: up to **five full turns per calendar day** (tick → one action per full turn, auto-closed on the server; use **Skip** to end without acting); **each** full turn consumes **one** of your **100** `turnsLeft` (not once per calendar day). Humans and AIs can all play during the round; AIs run in the background (after each new day the server kicks a full AI drain once the galaxy transaction has committed; mid-round catch-up still uses background runs), and a **round timer** skips unused full turns when it expires — each skipped slot also consumes `turnsLeft` — so the calendar advances (see [`games/srx/docs/HOWTOPLAY.md`](games/srx/docs/HOWTOPLAY.md)). The default remains **sequential** one-player-at-a-time turns.
 
 ### Core Systems
 
@@ -193,23 +194,32 @@ packages/
     hooks/useGameState.ts     # Generic status-poll hook
     hooks/useGameAction.ts    # POST /api/game/action wrapper
 games/
-  srx/src/
-    definition.ts             # SrxGameDefinition implements GameDefinition<SrxWorldState>
-    types.ts                  # SrxWorldState, SrxEmpireSlice
-    index.ts                  # Barrel (srxGameDefinition, SrxWorldState)
+  srx/
+    src/
+      definition.ts           # SrxGameDefinition implements GameDefinition<SrxWorldState>
+      help-content.ts         # In-game help text (served by GET /api/game/help?game=srx)
+      types.ts                # SrxWorldState, SrxEmpireSlice
+      index.ts                # Barrel (srxGameDefinition, SrxWorldState)
+    docs/
+      GAME-SPEC.md            # SRX complete technical specification
+      HOWTOPLAY.md            # SRX player-facing game guide
 src/
   app/
     page.tsx                        # Main game UI + TurnSummaryModal + TurnTimer
-    admin/page.tsx                  # Operator admin UI (/admin): galaxies list + create pre-staged lobbies
+    page.tsx                        # Main game UI + TurnSummaryModal + TurnTimer + HelpModal
+    admin/page.tsx                  # Operator admin UI (/admin): settings, password
+    admin/game-sessions/page.tsx    # Game sessions (/admin/game-sessions): list + create pre-staged lobbies
     admin/users/page.tsx            # Operator user accounts (/admin/users): list, force password, delete
     api/auth/                       # signup, login (UserAccount + Command Center)
-    api/game/                       # action, tick, status, register, join, lobbies, session, messages, leaderboard, gameover, highscores, log
+    api/game/                       # action, tick, status, register, join, lobbies, session, messages, leaderboard, gameover, highscores, log, help
     api/ai/                         # setup, run-all, turn
     api/admin/                      # login, logout, me, password, settings, galaxies, users (cookie auth)
   components/
     ActionPanel.tsx                  # 7-tabbed action panel + turn order display
+    AdminNav.tsx                     # Shared admin navigation bar (all admin pages)
     EmpirePanel.tsx                  # Empire status with collapsible planet details
-    EventLog.tsx                     # Color-coded turn report and event log
+    EventLog.tsx                     # Color-coded turn report and event log ("COMM CHANNEL")
+    HelpModal.tsx                    # In-game help overlay (fetches /api/game/help?game=srx)
     Leaderboard.tsx                  # Galactic Powers (Rk, Commander, Prt, Worth, Pop, Plt, Turns, Mil) + click-to-target
   lib/
     game-engine.ts                   # Core: 19-step turn tick + 35 action types; blocks attacks/covert vs protected rivals

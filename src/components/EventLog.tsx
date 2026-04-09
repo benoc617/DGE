@@ -1,7 +1,7 @@
 "use client";
 
 function classifyLine(line: string): string {
-  if (line.includes("═══") || line.includes("───"))
+  if (line.includes("═══") || line.includes("───") || /^={4,}$/.test(line.trim()) || /^-{4,}$/.test(line.trim()))
     return "text-green-600 font-bold";
   if (line.includes("STARVATION") || line.includes("BANKRUPTCY") || line.includes("DEFICIT") || line.includes("COLLAPSED") || line.includes("COUP"))
     return "text-red-400 font-bold";

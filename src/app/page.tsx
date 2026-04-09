@@ -10,6 +10,7 @@ import { classifyTurnEvents } from "@/lib/critical-events";
 import { AUTH, SESSION } from "@/lib/game-constants";
 import { apiFetch } from "@/lib/client-fetch";
 import { simultaneousDoorCommandCenterDisabled } from "@/lib/door-game-ui";
+import { HelpModal } from "@/components/HelpModal";
 
 interface HubGame {
   playerId: string;
@@ -247,13 +248,34 @@ export default function Home() {
   const [inputIsPublic, setInputIsPublic] = useState(true);
   const [inputTurnTimer, setInputTurnTimer] = useState("24h");
   const [inputMaxPlayers, setInputMaxPlayers] = useState(String(SESSION.MAX_PLAYERS_DEFAULT));
-  const [inputSimultaneousTurns, setInputSimultaneousTurns] = useState(false);
+  const [inputSimultaneousTurns, setInputSimultaneousTurns] = useState(true);
   const [dayRolloverNotice, setDayRolloverNotice] = useState<{ completedDay: number } | null>(null);
   const [endOfDayModal, setEndOfDayModal] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
+  const [helpContent, setHelpContent] = useState<{ title: string; content: string } | null>(null);
 
+  const eventCounterRef = useRef(0);
   const addEvent = useCallback((msg: string) => {
-    setEvents((prev) => [`[T${prev.length}] ${msg}`, ...prev.slice(0, 199)]);
+    const n = ++eventCounterRef.current;
+    setEvents((prev) => [`[T${n}] ${msg}`, ...prev.slice(0, 199)]);
   }, []);
+
+  const openHelp = useCallback(async () => {
+    if (helpContent) {
+      setShowHelp(true);
+      return;
+    }
+    try {
+      const res = await fetch("/api/game/help?game=srx");
+      if (res.ok) {
+        const data = (await res.json()) as { title: string; content: string };
+        setHelpContent(data);
+        setShowHelp(true);
+      }
+    } catch {
+      // silently ignore — help is non-critical
+    }
+  }, [helpContent]);
 
   const showActionError = useCallback((message: string) => {
     if (actionErrorTimerRef.current) {
@@ -650,6 +672,22 @@ export default function Home() {
     setSetupPhase("login");
   }
 
+  async function handleStartFullTurn() {
+    if (!gameState || gameState.canAct === false || gameState.turnOpen || turnProcessing) return;
+    setTickFired(true);
+    try {
+      const res = await apiFetch("/api/game/tick", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ playerName }),
+      });
+      if (!res.ok) { setTickFired(false); return; }
+      await refreshState(playerName, createdPlayerIdRef.current ?? sessionPlayerId ?? gameState?.player.id);
+    } catch {
+      setTickFired(false);
+    }
+  }
+
   async function handleSkipTurn() {
     if (gameState?.turnMode === "simultaneous" && gameState.canAct !== false && !gameState.turnOpen) {
       try {
@@ -816,7 +854,7 @@ export default function Home() {
       setGameState((prev) => {
         if (!prev) return prev;
         const used = (prev.empire.fullTurnsUsedThisRound ?? 0) + 1;
-        const left = Math.max(0, (prev as GameState & { actionsPerDay?: number }).actionsPerDay ?? 5 - used);
+        const left = Math.max(0, ((prev as GameState & { actionsPerDay?: number }).actionsPerDay ?? 5) - used);
         return {
           ...prev,
           empire: { ...prev.empire, turnOpen: false, fullTurnsUsedThisRound: used },
@@ -882,9 +920,9 @@ export default function Home() {
         const tr = data.turnReport;
         if (tr && typeof tr === "object" && tr !== null && "income" in tr) {
           const r = tr as TurnPopupData;
-          addEvent(`═══════════════════════════════════`);
+          addEvent(`========================================`);
           addEvent(`  TURN ${gameState.empire.turnsPlayed} — SITUATION REPORT`);
-          addEvent(`═══════════════════════════════════`);
+          addEvent(`========================================`);
           addEvent(`  INCOME: ${r.income.total.toLocaleString()} cr`);
           addEvent(`  EXPENSES: ${r.expenses.total.toLocaleString()} cr`);
           addEvent(`  NET: ${(r.income.total - r.expenses.total >= 0 ? "+" : "")}${(r.income.total - r.expenses.total).toLocaleString()} cr`);
@@ -892,7 +930,7 @@ export default function Home() {
           if (r.events.length > 0) {
             for (const ev of r.events) addEvent(`  ⚡ ${ev}`);
           }
-          addEvent(`───────────────────────────────────`);
+          addEvent(`----------------------------------------`);
 
           const turnStartPayload: TurnPopupData = {
             mode: "turn_start",
@@ -1518,7 +1556,7 @@ export default function Home() {
               ) : gameState.turnMode === "simultaneous" ? (
                 <>
                   <span className="text-green-600">
-                    D{gameState.dayNumber ?? 1} · {gameState.fullTurnsLeftToday ?? 0}/{gameState.actionsPerDay ?? 5} full turns
+                    D{gameState.dayNumber ?? 1} · {(gameState.actionsPerDay ?? 5) - (gameState.fullTurnsLeftToday ?? 0)}/{gameState.actionsPerDay ?? 5} turns used
                   </span>
                   <span
                     className={`font-bold ${
@@ -1526,7 +1564,9 @@ export default function Home() {
                         ? "text-red-400"
                         : gameState.turnOpen
                           ? "text-cyan-400"
-                          : "text-yellow-400"
+                          : gameState.canAct === false
+                            ? "text-yellow-400"
+                            : "text-yellow-400 cursor-pointer hover:text-yellow-200"
                     }`}
                     title={
                       gameState.empire.turnsLeft < 1
@@ -1535,7 +1575,12 @@ export default function Home() {
                           ? "You used all full turns for this calendar day, or you are waiting for other commanders. When the round timer expires, unused full turns are skipped and the next calendar day begins."
                           : gameState.turnOpen
                             ? "This full turn is open — take actions, then end turn when done."
-                            : "Begin this full turn with your situation report (economy update). Usually starts automatically; use Skip if needed."
+                            : "Click to begin your full turn now (or wait — it starts automatically)."
+                    }
+                    onClick={
+                      !gameState.turnOpen && gameState.canAct !== false && !turnProcessing
+                        ? handleStartFullTurn
+                        : undefined
                     }
                   >
                     {gameState.empire.turnsLeft < 1
@@ -1579,8 +1624,23 @@ export default function Home() {
           )}
           <span className="text-green-700">│</span>
           <span className="text-green-600">{playerName}</span>
+          <button
+            type="button"
+            onClick={() => void openHelp()}
+            className="ml-1 border border-green-800 text-green-600 hover:border-green-500 hover:text-green-400 px-1.5 py-0.5 text-[10px] leading-none"
+            title="Show help (game rules &amp; reference)"
+          >
+            ?
+          </button>
         </div>
       </header>
+      {showHelp && helpContent && (
+        <HelpModal
+          title={helpContent.title}
+          content={helpContent.content}
+          onClose={() => setShowHelp(false)}
+        />
+      )}
 
       {actionError && (
         <div

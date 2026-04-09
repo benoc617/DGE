@@ -42,8 +42,9 @@ If a command fails on the host, **do not** treat that as the project failing unt
 **Whenever you make a change to game mechanics, constants, UI, data model, or project structure — especially before a commit — you MUST update all affected documentation files:**
 
 - **`README.md`** — Project overview, setup, tech stack, structure. Update if you add dependencies, change commands, add files, or change the project description.
-- **`HOWTOPLAY.md`** — Player-facing game guide. Update if you change game mechanics, add/remove actions, change costs, alter strategies, or modify UI controls.
-- **`GAME-SPEC.md`** — Complete technical specification. Update if you change ANY game formula, constant, data model field, action type, tech tree entry, combat mechanic, or turn tick step. This is the authoritative spec — it must always match the code.
+- **`ENGINE-SPEC.md`** — Complete engine specification (turn modes, AI, schema, auth, admin, help system). Update if you change engine-level mechanics, the `GameDefinition` interface, admin pages, or auth.
+- **`games/srx/docs/HOWTOPLAY.md`** — SRX player-facing game guide. Update if you change SRX game mechanics, actions, costs, strategies, or UI controls.
+- **`games/srx/docs/GAME-SPEC.md`** — SRX complete technical specification. Update if you change ANY SRX formula, constant, data model field, action type, tech tree entry, combat mechanic, or turn tick step. This is the authoritative SRX spec — it must always match the code.
 - **`CLAUDE.md`** — This file. Update if you change commands, architecture, key file roles, or add new conventions.
 - **`AGENTS.md`** — Cursor / editor agent rules. Update if you change container-only tooling policy, Next.js agent notices, or repo-wide agent constraints.
 
@@ -285,14 +286,38 @@ This repo uses an **npm workspace monorepo** where game-agnostic infrastructure 
 - **Game-specific hooks injected via interfaces** — `TurnOrderHooks` / `DoorGameHooks` let the engine call game persistence without knowing SRX
 - **Registration side-effect** — `src/lib/srx-registration.ts` wires SRX into the engine registry; import it once at route startup
 
+### Help system (per game)
+
+Each game provides a help file at `games/{name}/src/help-content.ts` that exports:
+- `{NAME}_HELP_TITLE` — string
+- `{NAME}_HELP_CONTENT` — markdown string
+- `HELP_REGISTRY` — `Record<string, { title: string; content: string }>` mapping game type key to content
+
+`GET /api/game/help?game={name}` serves this content. The `?` button in the game header fetches it and shows `<HelpModal>`. Content is cached after first fetch per browser session.
+
+When updating game mechanics, update the help file alongside `games/{name}/docs/HOWTOPLAY.md`.
+
+### Documentation locations
+
+| Doc | Location | Covers |
+|-----|----------|--------|
+| Engine spec | `ENGINE-SPEC.md` | DGE infrastructure — turn modes, AI, schema, auth, admin |
+| SRX game spec | `games/srx/docs/GAME-SPEC.md` | All SRX formulas, constants, actions, combat, tech |
+| SRX how-to-play | `games/srx/docs/HOWTOPLAY.md` | Player-facing SRX guide |
+| SRX help (in-game) | `games/srx/src/help-content.ts` | In-game reference (served via API + HelpModal) |
+| Agent instructions | `CLAUDE.md` | This file |
+| Editor agent rules | `AGENTS.md` | Container-only policy, Next.js agent notices |
+
 ### Adding a second game
 
 1. Create `games/{name}/src/definition.ts` implementing `GameDefinition<{Name}State>`
-2. Create `games/{name}/src/index.ts` barrel exporting the definition and state type
-3. Create `games/{name}/package.json` as `@dge/{name}`
-4. Add a `src/lib/{name}-registration.ts` side-effect module that calls `registerGame("{name}", definition, hooks)`
-5. Import the registration module at the top of the relevant API route files
-6. Create a `GameUIConfig<{Name}State>` and pass it to `<GameLayout>` in the UI
+2. Create `games/{name}/src/help-content.ts` with `HELP_REGISTRY` entry
+3. Create `games/{name}/src/index.ts` barrel exporting the definition and state type
+4. Create `games/{name}/package.json` as `@dge/{name}` and `games/{name}/docs/GAME-SPEC.md`
+5. Add a `src/lib/{name}-registration.ts` side-effect module that calls `registerGame("{name}", definition, hooks)`
+6. Import the registration module at the top of the relevant API route files
+7. Create a `GameUIConfig<{Name}State>` and pass it to `<GameLayout>` in the UI
+8. Add unit tests in `tests/unit/{name}-*.test.ts` and E2E tests in `tests/e2e/{name}-*.test.ts`
 
 ### Tests for engine and game code
 
@@ -307,7 +332,7 @@ Shell React components (`GameLayout`, `TurnIndicator`) are integration-tested vi
 
 ## Architecture
 
-Solar Realms Extreme is a turn-based galactic empire management game (BBS-era Solar Realms Elite remake with modern improvements). See `GAME-SPEC.md` for the complete technical specification of all game mechanics and formulas.
+Solar Realms Extreme is a turn-based galactic empire management game (BBS-era Solar Realms Elite remake with modern improvements). See `games/srx/docs/GAME-SPEC.md` for the complete SRX technical specification and `ENGINE-SPEC.md` for the engine specification.
 
 ### Data flow for a human turn
 1. When `isYourTurn` becomes true, UI calls `POST /api/game/tick` — `runAndPersistTick()` runs the turn tick, persists, sets `Empire.tickProcessed`, returns `turnReport`. Shows **TurnSummaryModal** (situation report) with critical-event highlighting (`src/lib/critical-events.ts`).

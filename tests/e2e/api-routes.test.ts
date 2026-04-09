@@ -78,6 +78,21 @@ describe("E2E: auxiliary API routes", () => {
     expect(status).toBe(400);
   });
 
+  it("GET /api/game/help?game=srx returns title and content", async () => {
+    const { status, data } = await api("/api/game/help?game=srx");
+    expect(status).toBe(200);
+    const d = data as { title: string; content: string };
+    expect(typeof d.title).toBe("string");
+    expect(d.title).toContain("Solar Realms");
+    expect(typeof d.content).toBe("string");
+    expect(d.content.length).toBeGreaterThan(100);
+  });
+
+  it("GET /api/game/help?game=unknown returns 404", async () => {
+    const { status } = await api("/api/game/help?game=notarealegame");
+    expect(status).toBe(404);
+  });
+
   it("GET /api/game/messages 404 for unknown player", async () => {
     const { status } = await getMessages(`NoSuchPlayer_${Date.now()}`);
     expect(status).toBe(404);

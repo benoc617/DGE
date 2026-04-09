@@ -10,6 +10,7 @@ import {
   loadStoredAdminUsername,
   saveAdminUsername,
 } from "@/lib/admin-client-storage";
+import { AdminNav } from "@/components/AdminNav";
 
 export default function AdminPage() {
   const [hydrated, setHydrated] = useState(false);
@@ -248,27 +249,7 @@ export default function AdminPage() {
 
   return (
     <main className="min-h-screen bg-black text-green-400 font-mono p-4">
-      <div className="flex justify-between items-center border-b border-green-900 pb-2 mb-6">
-        <h1 className="text-yellow-400 font-bold tracking-widest text-sm">DGE ADMIN</h1>
-        <div className="flex gap-3 text-xs items-center">
-          <Link href="/admin/game-sessions" className="text-green-500 hover:text-green-300 border border-green-800 px-2 py-0.5">
-            Game Sessions
-          </Link>
-          <Link href="/admin/users" className="text-cyan-600 hover:text-cyan-400 border border-cyan-900 px-2 py-0.5">
-            Users
-          </Link>
-          <button
-            type="button"
-            onClick={() => void handleLogout()}
-            className="text-green-700 hover:text-red-400"
-          >
-            Log out
-          </button>
-          <Link href="/" className="text-green-700 hover:text-green-400">
-            Game
-          </Link>
-        </div>
-      </div>
+      <AdminNav current="admin" onRefresh={null} onLogout={() => void handleLogout()} />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
         {/* Change admin password */}

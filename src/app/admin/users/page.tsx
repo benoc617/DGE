@@ -8,6 +8,7 @@ import {
   loadStoredAdminUsername,
   saveAdminUsername,
 } from "@/lib/admin-client-storage";
+import { AdminNav } from "@/components/AdminNav";
 
 type UserRow = {
   id: string;
@@ -222,35 +223,11 @@ export default function AdminUsersPage() {
 
   return (
     <main className="min-h-screen bg-black text-green-400 font-mono p-4">
-      <div className="flex justify-between items-center border-b border-green-900 pb-2 mb-4">
-        <h1 className="text-yellow-400 font-bold tracking-widest text-sm">DGE ADMIN — USERS</h1>
-        <div className="flex gap-3 text-xs items-center">
-          <button
-            type="button"
-            onClick={() => void loadUsers()}
-            disabled={loading}
-            className="text-green-600 hover:text-green-400 disabled:opacity-40"
-          >
-            Refresh
-          </button>
-          <button
-            type="button"
-            onClick={() => void handleLogout()}
-            className="text-green-700 hover:text-red-400"
-          >
-            Log out
-          </button>
-          <Link href="/admin/game-sessions" className="text-green-500 hover:text-green-300 border border-green-800 px-2 py-0.5">
-            Game Sessions
-          </Link>
-          <Link href="/admin" className="text-green-700 hover:text-green-400">
-            Admin
-          </Link>
-          <Link href="/" className="text-green-700 hover:text-green-400">
-            Game
-          </Link>
-        </div>
-      </div>
+      <AdminNav
+        current="users"
+        onRefresh={() => void loadUsers()}
+        onLogout={() => void handleLogout()}
+      />
 
       <p className="text-green-700 text-xs mb-4 max-w-3xl">
         Registered commanders (<span className="text-green-600">UserAccount</span>). Last login updates on successful{" "}
