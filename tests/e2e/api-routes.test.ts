@@ -103,10 +103,9 @@ describe("E2E: auxiliary API routes", () => {
     expect(status).toBe(400);
   });
 
-  it("POST /api/ai/setup (count path) re-enqueue is idempotent — second call returns 0 created", async () => {
-    // Verifies that enqueueAiTurnsForSession dedup correctly handles the case
-    // where AI players already have pending/claimed jobs (no double-scheduling).
-    // This exercises the same dedup path that the failure re-enqueue in ai-worker uses.
+  it("POST /api/ai/setup with same explicit names deduplicates — second call returns 0 created", async () => {
+    // Verifies that createAIPlayersForSession skips names that already exist,
+    // which is the same dedup behaviour used after a failed job re-enqueue in ai-worker.
     const name = uniqueName("AiDedupE2E");
     const { status: regStatus, data: reg } = await register(name, TEST_PASSWORD, {
       galaxyName: uniqueGalaxy("AiDedupGal"),
@@ -115,21 +114,22 @@ describe("E2E: auxiliary API routes", () => {
     const sessionId = (reg as { gameSessionId?: string }).gameSessionId!;
     scheduleTestGalaxyDeletion(sessionId);
 
-    // First setup: creates 2 AI players.
+    const aiNames = ["Admiral Koss", "Zeta Prime"];
+
+    // First setup: creates 2 AI players with explicit names.
     const { status: s1, data: d1 } = await api("/api/ai/setup", {
       method: "POST",
-      body: JSON.stringify({ gameSessionId: sessionId, count: 2 }),
+      body: JSON.stringify({ gameSessionId: sessionId, names: aiNames }),
     });
     expect(s1).toBe(200);
     expect((d1 as { created: string[] }).created).toHaveLength(2);
 
-    // Second identical call: AI players already exist, returns empty created list.
+    // Second identical call: both names already exist — 0 new players created.
     const { status: s2, data: d2 } = await api("/api/ai/setup", {
       method: "POST",
-      body: JSON.stringify({ gameSessionId: sessionId, count: 2 }),
+      body: JSON.stringify({ gameSessionId: sessionId, names: aiNames }),
     });
     expect(s2).toBe(200);
-    // All requested names are already taken — 0 new players created.
     expect((d2 as { created: string[] }).created).toHaveLength(0);
   });
 
