@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { apiFetch } from "@/lib/client-fetch";
 import { TurnTimer } from "@/components/TurnTimer";
 import { HelpModal } from "@/components/HelpModal";
@@ -163,11 +163,11 @@ function CardView({
   const cursorCls = onClick
     ? "cursor-pointer hover:border-yellow-400 transition-all"
     : isDraggable
-      ? "cursor-grab active:cursor-grabbing"
+      ? "cursor-grab active:cursor-grabbing hover:border-green-500 hover:-translate-y-1 transition-transform"
       : "";
 
   // Left-edge highlight when a dragged card is hovering over this slot
-  const dragOverCls = dragOver ? "border-l-2 border-l-yellow-400" : "";
+  const dragOverCls = dragOver ? "border-l-4 border-l-yellow-400 -translate-x-1" : "";
 
   if (faceDown) {
     return (
@@ -245,7 +245,7 @@ function WaitingScreen({
 }
 
 // ---------------------------------------------------------------------------
-// Game-over overlay
+// Game-over overlay (match complete / resign / timeout / single-hand end)
 // ---------------------------------------------------------------------------
 
 function GameOverOverlay({
@@ -281,7 +281,7 @@ function GameOverOverlay({
     headline = iWon ? "YOU WIN THE MATCH!" : "MATCH OVER";
     detail = `Final score — You: ${scores[myIdx]} | Opponent: ${scores[1 - myIdx]}`;
   } else {
-    // hand_complete
+    // hand_complete (single-hand game)
     if (handResult) {
       if (handResult.isGin) {
         headline = handResult.winner === myIdx ? "GIN! YOU WIN" : "OPPONENT GOES GIN";
@@ -310,6 +310,234 @@ function GameOverOverlay({
         >
           BACK TO LOBBY
         </button>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Hand result modal (match mode — shown after each intermediate hand)
+// ---------------------------------------------------------------------------
+
+function HandResultModal({
+  result,
+  myPlayerIdx,
+  myName,
+  opponentName,
+  scores,
+  handsWon,
+  matchTarget,
+  isYourTurn,
+  busy,
+  onDeal,
+  onDismiss,
+}: {
+  result: HandResult;
+  myPlayerIdx: 0 | 1 | null;
+  myName: string;
+  opponentName: string;
+  scores: [number, number];
+  handsWon: [number, number];
+  matchTarget: number | null;
+  isYourTurn: boolean;
+  busy: boolean;
+  onDeal: () => void;
+  onDismiss: () => void;
+}) {
+  // Use refs so the keyboard handler always sees the current action without
+  // re-registering on every render.
+  const actRef = useRef<() => void>(() => undefined);
+  actRef.current = isYourTurn ? onDeal : onDismiss;
+
+  useEffect(() => {
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        actRef.current();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        onDismiss();
+      }
+    }
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [onDismiss]); // onDismiss is stable (useCallback in parent)
+
+  const myIdx = myPlayerIdx ?? 0;
+  const oppIdx = (1 - myIdx) as 0 | 1;
+  const iWon = result.winner === myIdx;
+
+  let headline = "";
+  let subtext = "";
+  const headlineColor = iWon ? "text-yellow-400" : "text-red-400";
+
+  if (result.isGin) {
+    headline = iWon ? "GIN!" : "OPPONENT GOES GIN";
+    subtext = iWon
+      ? "Perfect hand — opponent cannot lay off cards."
+      : "Opponent held a perfect hand.";
+  } else if (result.isUndercut) {
+    headline = iWon ? "UNDERCUT!" : "YOU WERE UNDERCUT";
+    subtext = iWon
+      ? "Opponent's deadwood after layoff was ≤ yours — they win with a 25-point bonus."
+      : "Your deadwood after layoff was ≤ theirs — you win with a 25-point bonus.";
+  } else {
+    headline = iWon ? "YOU WIN THE HAND" : "OPPONENT WINS";
+    subtext = `${result.knockerIdx === myIdx ? "You" : "Opponent"} knocked with ${result.knockerDeadwood} deadwood.`;
+  }
+
+  const knockerName = result.knockerIdx === myIdx ? myName : opponentName;
+  const defenderName = result.knockerIdx === myIdx ? opponentName : myName;
+  const myScore = scores[myIdx];
+  const oppScore = scores[oppIdx];
+  const pct = (s: number) =>
+    matchTarget ? Math.min(100, Math.round((s / matchTarget) * 100)) : 0;
+
+  return (
+    <div className="absolute inset-0 bg-black/85 flex items-center justify-center z-50 overflow-y-auto py-4">
+      <div className="border border-yellow-400 bg-black rounded w-full max-w-2xl mx-4 text-center font-mono overflow-hidden">
+        {/* Headline */}
+        <div className="px-6 pt-6 pb-3 border-b border-green-900">
+          <h2 className={`text-4xl font-bold tracking-widest mb-1 ${headlineColor}`}>
+            {headline}
+          </h2>
+          <p className="text-green-600 text-xs">{subtext}</p>
+        </div>
+
+        {/* Both final hands */}
+        <div className="grid grid-cols-2 divide-x divide-green-900 border-b border-green-900">
+          {/* Knocker */}
+          <div className="p-3 text-left">
+            <div className="text-[10px] text-green-600 font-bold tracking-wider mb-2">
+              {knockerName.toUpperCase()} · KNOCKER
+            </div>
+            {result.knockerMelds.map((meld, i) => (
+              <div key={i} className="flex gap-0.5 mb-1 flex-wrap">
+                {meld.map((ck) => (
+                  <CardView key={ck} cardKey={ck} small />
+                ))}
+              </div>
+            ))}
+            {result.knockerDeadwoodCards.length > 0 && (
+              <div className="mt-1 pt-1 border-t border-green-900/50">
+                <div className="text-[10px] text-red-600 mb-0.5">
+                  DEADWOOD · {result.knockerDeadwood} pts
+                </div>
+                <div className="flex gap-0.5 flex-wrap">
+                  {result.knockerDeadwoodCards.map((ck) => (
+                    <CardView key={ck} cardKey={ck} small />
+                  ))}
+                </div>
+              </div>
+            )}
+            {result.knockerDeadwoodCards.length === 0 && (
+              <div className="text-[10px] text-green-400 mt-1">GIN — no deadwood</div>
+            )}
+          </div>
+
+          {/* Defender */}
+          <div className="p-3 text-left">
+            <div className="text-[10px] text-green-600 font-bold tracking-wider mb-2">
+              {defenderName.toUpperCase()} · DEFENDER
+            </div>
+            {result.defenderMelds.map((meld, i) => (
+              <div key={i} className="flex gap-0.5 mb-1 flex-wrap">
+                {meld.map((ck) => (
+                  <CardView key={ck} cardKey={ck} small />
+                ))}
+              </div>
+            ))}
+            {result.defenderDeadwoodCards.length > 0 && (
+              <div className="mt-1 pt-1 border-t border-green-900/50">
+                <div className="text-[10px] text-red-600 mb-0.5">
+                  DEADWOOD · {result.defenderDeadwoodAfterLayoff} pts after layoff
+                  {result.defenderDeadwood !== result.defenderDeadwoodAfterLayoff && (
+                    <span className="text-green-700 ml-1">({result.defenderDeadwood} before)</span>
+                  )}
+                </div>
+                <div className="flex gap-0.5 flex-wrap">
+                  {result.defenderDeadwoodCards.map((ck) => (
+                    <CardView key={ck} cardKey={ck} small />
+                  ))}
+                </div>
+              </div>
+            )}
+            {result.defenderDeadwoodCards.length === 0 && !result.isGin && (
+              <div className="text-[10px] text-green-400 mt-1">No deadwood after layoff</div>
+            )}
+          </div>
+        </div>
+
+        {/* Points earned */}
+        <div className="px-6 py-3 border-b border-green-900">
+          <span className="text-2xl font-bold text-yellow-400">
+            +{result.points}
+          </span>
+          <span className="text-green-400 ml-2 text-sm">
+            points to {iWon ? myName : opponentName}
+          </span>
+        </div>
+
+        {/* Match score + progress */}
+        {matchTarget && (
+          <div className="px-6 py-3 border-b border-green-900 space-y-2">
+            <div className="text-[10px] text-green-700 tracking-wider">
+              MATCH SCORE — FIRST TO {matchTarget}
+            </div>
+            {[
+              { name: myName, score: myScore, isMe: true },
+              { name: opponentName, score: oppScore, isMe: false },
+            ].map((p) => (
+              <div key={p.name} className="flex items-center gap-2">
+                <span
+                  className={`text-xs w-28 truncate text-left ${p.isMe ? "text-yellow-400" : "text-green-400"}`}
+                >
+                  {p.name}
+                </span>
+                <div className="flex-1 h-2 bg-green-950 rounded overflow-hidden">
+                  <div
+                    className={`h-full rounded transition-all ${p.isMe ? "bg-yellow-400" : "bg-green-500"}`}
+                    style={{ width: `${pct(p.score)}%` }}
+                  />
+                </div>
+                <span
+                  className={`text-xs tabular-nums w-10 text-right ${p.isMe ? "text-yellow-400" : "text-green-400"}`}
+                >
+                  {p.score}
+                </span>
+              </div>
+            ))}
+            <div className="text-[10px] text-green-700">
+              Hands won — {myName}: {handsWon[myIdx]} | {opponentName}: {handsWon[oppIdx]}
+            </div>
+          </div>
+        )}
+
+        {/* Action */}
+        <div className="px-6 py-4 space-y-2">
+          {isYourTurn ? (
+            <button
+              onClick={onDeal}
+              disabled={busy}
+              className="w-full border border-yellow-500 text-yellow-400 py-3 text-sm font-bold tracking-wider hover:bg-yellow-900/30 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              DEAL NEXT HAND →
+            </button>
+          ) : (
+            <>
+              <p className="text-green-700 text-xs">
+                Waiting for {opponentName} to deal next hand…
+              </p>
+              <button
+                onClick={onDismiss}
+                className="border border-green-800 text-green-600 px-8 py-2 text-sm hover:bg-green-900/30"
+              >
+                OK
+              </button>
+            </>
+          )}
+          <p className="text-green-900 text-[10px]">Enter / Space to continue · Esc to dismiss</p>
+        </div>
       </div>
     </div>
   );
@@ -377,10 +605,15 @@ export function GinRummyGameScreen({
     return () => clearInterval(interval);
   }, [fetchStatus, status?.isYourTurn]);
 
-  // Reset layoff selection on phase change
+  // Reset layoff selection + hand-result modal on phase change
   useEffect(() => {
     if (status?.phase !== "layoff") {
       setPendingLayoffs([]);
+    }
+    // When a new hand starts (phase leaves hand_over), reset the modal so it
+    // will fire again at the next hand_over transition.
+    if (status?.phase !== "hand_over") {
+      setShowHandResult(false);
     }
   }, [status?.phase]);
 
@@ -494,6 +727,17 @@ export function GinRummyGameScreen({
     setDragging(null);
     setDragOverKey(null);
   }
+
+  // ── Hand result modal callbacks ──────────────────────────────────────────
+
+  // Stable dismiss: used as a dep in the keyboard handler inside HandResultModal.
+  const handleDismissHandResult = useCallback(() => setShowHandResult(false), []);
+
+  // Deal next hand: calls the server action then closes the modal.
+  const handleDealNextHand = useCallback(async () => {
+    await doAction("next_hand");
+    setShowHandResult(false);
+  }, [doAction]);
 
   // ── Help ─────────────────────────────────────────────────────────────────
 
@@ -726,15 +970,6 @@ export function GinRummyGameScreen({
             </div>
           )}
 
-          {status?.phase === "hand_over" && status.matchTarget !== null && status.isYourTurn && (
-            <button
-              onClick={() => void doAction("next_hand")}
-              className="border border-yellow-500 text-yellow-400 py-1 rounded hover:bg-yellow-900 text-xs"
-            >
-              NEXT HAND
-            </button>
-          )}
-
           {!gameOver && (
             <button
               onClick={() => void doAction("resign")}
@@ -760,31 +995,21 @@ export function GinRummyGameScreen({
             />
           )}
 
-          {/* Hand result popup (non-terminal hands in match mode) */}
+          {/* Hand result modal — shown after each hand in match mode */}
           {showHandResult && status?.handResult && !gameOver && (
-            <div className="absolute inset-0 bg-black/70 flex items-center justify-center z-40">
-              <div className="border border-yellow-400 bg-black p-6 rounded max-w-md text-center">
-                <h3 className="text-xl text-yellow-400 mb-3">
-                  {status.handResult.isGin ? "GIN!" : status.handResult.isUndercut ? "UNDERCUT!" : "KNOCK!"}
-                </h3>
-                <p className="text-green-400">
-                  {status.handResult.winner === status.myPlayerIdx ? "You win" : "Opponent wins"}{" "}
-                  {status.handResult.points} points
-                </p>
-                <p className="text-green-600 text-sm mt-1">
-                  Knocker deadwood: {status.handResult.knockerDeadwood} · Defender: {status.handResult.defenderDeadwoodAfterLayoff}
-                </p>
-                <p className="text-green-400 mt-3">
-                  Score — You: {status.scores[status.myPlayerIdx ?? 0]} | Opp: {status.scores[status.myPlayerIdx === 0 ? 1 : 0]}
-                </p>
-                <button
-                  onClick={() => setShowHandResult(false)}
-                  className="mt-4 border border-green-600 text-green-400 px-4 py-2 rounded hover:bg-green-900 text-sm"
-                >
-                  OK
-                </button>
-              </div>
-            </div>
+            <HandResultModal
+              result={status.handResult}
+              myPlayerIdx={status.myPlayerIdx}
+              myName={myName}
+              opponentName={opponentName}
+              scores={status.scores}
+              handsWon={status.handsWon}
+              matchTarget={status.matchTarget}
+              isYourTurn={status.isYourTurn}
+              busy={busy}
+              onDeal={() => void handleDealNextHand()}
+              onDismiss={handleDismissHandResult}
+            />
           )}
 
           {/* Opponent's hand (face down) */}
@@ -872,32 +1097,30 @@ export function GinRummyGameScreen({
 
           {/* My hand */}
           <div className="w-full">
-            {/* Sort controls + label */}
-            <div className="flex items-center justify-center gap-3 mb-1">
-              <div className="text-xs text-green-600">
-                YOUR HAND · Deadwood: {status?.myDeadwoodValue ?? "—"}
-                {status?.phase === "discard" && status.isYourTurn && " · Click to select discard"}
-              </div>
-              {/* Only show sort/drag controls in flat hand view */}
-              {(!status?.myMelds || status.myMelds.length === 0) && (
-                <div className="flex gap-1">
-                  {(["rank", "suit"] as const).map((m) => (
-                    <button
-                      key={m}
-                      type="button"
-                      onClick={() => sortHand(m)}
-                      className={`text-[9px] px-1.5 py-0.5 border leading-none ${
-                        sortMode === m
-                          ? "border-yellow-500 text-yellow-400"
-                          : "border-green-800 text-green-700 hover:border-green-600 hover:text-green-500"
-                      }`}
-                      title={`Sort by ${m}`}
-                    >
-                      {m.toUpperCase()}
-                    </button>
-                  ))}
-                </div>
-              )}
+            {/* Hand label + sort controls */}
+            <div className="text-xs text-green-600 text-center mb-1">
+              YOUR HAND · Deadwood: {status?.myDeadwoodValue ?? "—"}
+              {status?.phase === "discard" && status.isYourTurn && " · Click to select discard"}
+            </div>
+            {/* Sort + drag hint — always shown */}
+            <div className="flex items-center justify-center gap-2 mb-2">
+              <span className="text-[10px] text-green-700">SORT:</span>
+              {(["rank", "suit"] as const).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => sortHand(m)}
+                  className={`text-xs px-2 py-0.5 border font-bold tracking-wider ${
+                    sortMode === m
+                      ? "border-yellow-500 text-yellow-400 bg-yellow-900/20"
+                      : "border-green-600 text-green-400 hover:border-green-400 hover:text-green-300"
+                  }`}
+                  title={`Sort hand by ${m}`}
+                >
+                  {m.toUpperCase()}
+                </button>
+              ))}
+              <span className="text-[10px] text-green-700 ml-1">· drag cards to reorder</span>
             </div>
 
             {/* Melds grouping */}
@@ -932,39 +1155,56 @@ export function GinRummyGameScreen({
                     ))}
                   </div>
                 ))}
-                {/* Deadwood cards — draggable to reorder within deadwood */}
+                {/* Deadwood cards — sorted/draggable via localOrder */}
                 {status.myDeadwood.length > 0 && (
-                  <div className="flex gap-0.5 p-0.5">
-                    {status.myDeadwood.map((ck) => (
-                      <CardView
-                        key={ck}
-                        cardKey={ck}
-                        selected={selectedCard === ck}
-                        highlight={
-                          status.isLayoffPhase &&
-                          status.layoffOptions.includes(ck)
-                        }
-                        dim={
-                          status.phase === "discard" &&
-                          status.isYourTurn &&
-                          !!selectedCard &&
-                          selectedCard !== ck &&
-                          !status.myMelds.flat().includes(ck)
-                        }
-                        onClick={
-                          status.isYourTurn && status.phase === "discard"
-                            ? () => setSelectedCard((prev) => (prev === ck ? null : ck))
-                            : status.isLayoffPhase && status.layoffOptions.includes(ck)
-                              ? () =>
-                                  setPendingLayoffs((prev) =>
-                                    prev.includes(ck)
-                                      ? prev.filter((c) => c !== ck)
-                                      : [...prev, ck],
-                                  )
-                              : undefined
-                        }
-                      />
-                    ))}
+                  <div
+                    className="flex gap-0.5 p-0.5"
+                    onDragOver={(e) => e.preventDefault()}
+                  >
+                    {(localOrder ?? status.myDeadwood)
+                      .filter((c) => status.myDeadwood.includes(c))
+                      .map((ck) => (
+                        <CardView
+                          key={ck}
+                          cardKey={ck}
+                          selected={selectedCard === ck}
+                          highlight={
+                            status.isLayoffPhase &&
+                            status.layoffOptions.includes(ck)
+                          }
+                          dim={
+                            status.phase === "discard" &&
+                            status.isYourTurn &&
+                            !!selectedCard &&
+                            selectedCard !== ck &&
+                            !status.myMelds.flat().includes(ck)
+                          }
+                          draggable={!status.isLayoffPhase}
+                          dragOver={dragOverKey === ck && dragging !== ck}
+                          onDragStart={(e) => {
+                            e.dataTransfer.effectAllowed = "move";
+                            setDragging(ck);
+                          }}
+                          onDragOver={(e) => {
+                            e.preventDefault();
+                            setDragOverKey(ck);
+                          }}
+                          onDrop={() => handleDrop(ck)}
+                          onDragEnd={() => { setDragging(null); setDragOverKey(null); }}
+                          onClick={
+                            status.isYourTurn && status.phase === "discard"
+                              ? () => setSelectedCard((prev) => (prev === ck ? null : ck))
+                              : status.isLayoffPhase && status.layoffOptions.includes(ck)
+                                ? () =>
+                                    setPendingLayoffs((prev) =>
+                                      prev.includes(ck)
+                                        ? prev.filter((c) => c !== ck)
+                                        : [...prev, ck],
+                                    )
+                                : undefined
+                          }
+                        />
+                      ))}
                   </div>
                 )}
               </div>
