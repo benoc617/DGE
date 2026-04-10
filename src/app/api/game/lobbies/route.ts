@@ -28,7 +28,7 @@ export async function GET(req: NextRequest) {
 
   const result = lobbies.map((l) => ({
     id: l.id,
-    galaxyName: l.galaxyName ?? `Galaxy ${l.id.slice(-6)}`,
+    galaxyName: l.galaxyName ?? `Session ${l.id.slice(-6)}`,
     createdBy: l.createdBy ?? "Unknown",
     playerCount: (l.playerNames as string[]).length,
     maxPlayers: l.maxPlayers,

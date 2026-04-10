@@ -200,6 +200,39 @@ The `runAiSequence` executes each step as a separate API action.
 
 ---
 
+## Game Logging
+
+Every gin rummy action is persisted to the `TurnLog` table (same as SRX). On hand/match completion, a `GameEvent` row is written summarising the result. When the game fully ends (single-hand `hand_complete`, `match_complete`, `resigned`, `timeout`), all `TurnLog` and `GameEvent` rows are dumped to stdout as `[ginrummy-gamelog]` JSON lines and then deleted from the DB (same pattern as SRX's `session-log-export`).
+
+### TurnLog rows
+Written for every successful action via `processFullAction` and `runAiSequence`.
+```json
+{
+  "playerId": "...",
+  "action": "draw_stock",
+  "details": { "params": {}, "actionMsg": "Drew from stock.", "handNumber": 1, "phase": "draw" }
+}
+```
+
+### GameEvent rows
+| `type` | Written when |
+|--------|-------------|
+| `hand_complete` | A hand ends in a match (game continues after `next_hand`) |
+| `hand_complete` | A single-hand game ends |
+| `match_complete` | The match target score is reached |
+| `game_resigned` | A player resigns |
+| `game_timeout` | Turn timer expires |
+
+### Stdout log format (`[ginrummy-gamelog]`)
+```
+[ginrummy-gamelog] {"type":"session_log_dump_start","sessionId":"...","turnLogCount":N,"gameEventCount":M}
+[ginrummy-gamelog] {"type":"turn_log","sessionId":"...","playerId":"...","action":"draw_stock",...}
+[ginrummy-gamelog] {"type":"game_event","sessionId":"...","type":"hand_complete","message":"..."}
+[ginrummy-gamelog] {"type":"session_log_purge_complete","sessionId":"...","turnLogCount":N,"gameEventCount":M}
+```
+
+---
+
 ## Files
 
 | File | Role |
@@ -207,7 +240,7 @@ The `runAiSequence` executes each step as a separate API action.
 | `games/ginrummy/src/types.ts` | Core types: `Card`, `GinRummyState`, `HandResult`, etc. |
 | `games/ginrummy/src/melds.ts` | Pure meld detection, deadwood calculation, layoff finding |
 | `games/ginrummy/src/rules.ts` | Game lifecycle: deal, draw, discard, knock, gin, scoring |
-| `games/ginrummy/src/definition.ts` | `GameDefinition`, MCTS search functions, determinization |
+| `games/ginrummy/src/definition.ts` | `GameDefinition`, MCTS search functions, determinization, logging |
 | `games/ginrummy/src/help-content.ts` | In-game help text |
 | `games/ginrummy/src/index.ts` | Package barrel export |
 | `src/lib/ginrummy-registration.ts` | Engine registration, `getActivePlayers` hook |
@@ -224,4 +257,4 @@ The `runAiSequence` executes each step as a separate API action.
 - `tests/unit/ginrummy-mcts.test.ts` — MCTS, eval, search functions, AI move generation
 
 ### E2E Tests
-- `tests/e2e/ginrummy.test.ts` — registration, status, draw/discard, AI polling, resign, human vs human
+- `tests/e2e/ginrummy/ginrummy.test.ts` — registration, status, draw/discard, AI polling, TurnLog presence after actions, log purge after game over, resign, human vs human

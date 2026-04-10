@@ -45,7 +45,7 @@ export async function PATCH(req: NextRequest) {
   }
 
   if (session.createdBy !== playerName) {
-    return NextResponse.json({ error: "Only the galaxy creator can change settings" }, { status: 403 });
+    return NextResponse.json({ error: "Only the session creator can change settings" }, { status: 403 });
   }
 
   const updateData: Record<string, unknown> = {};

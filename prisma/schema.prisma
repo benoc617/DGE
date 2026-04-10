@@ -327,7 +327,7 @@ model SystemSettings {
 
 model GameSession {
   id               String   @id @default(cuid())
-  galaxyName       String?  @unique
+  galaxyName       String?
   createdBy        String?
   isPublic         Boolean  @default(true)
   inviteCode       String?  @unique

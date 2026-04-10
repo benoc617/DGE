@@ -34,14 +34,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Session not found" }, { status: 404 });
     }
     if (!session.isPublic) {
-      return NextResponse.json({ error: "This galaxy requires an invite code" }, { status: 403 });
+      return NextResponse.json({ error: "This session requires an invite code" }, { status: 403 });
     }
   } else {
     return NextResponse.json({ error: "Provide either inviteCode or sessionId" }, { status: 400 });
   }
 
   if (session.status !== "active") {
-    return NextResponse.json({ error: "This galaxy is no longer active" }, { status: 410 });
+    return NextResponse.json({ error: "This session is no longer active" }, { status: 410 });
   }
 
   // Check if the game supports joining.
@@ -62,14 +62,14 @@ export async function POST(req: NextRequest) {
   }
 
   if ((session.playerNames as string[]).length >= session.maxPlayers) {
-    return NextResponse.json({ error: "Galaxy is full" }, { status: 409 });
+    return NextResponse.json({ error: "Session is full" }, { status: 409 });
   }
 
   const existingPlayer = await prisma.player.findFirst({
     where: { name: cred.playerName, gameSessionId: session.id },
   });
   if (existingPlayer) {
-    return NextResponse.json({ error: "Name already taken in this galaxy" }, { status: 409 });
+    return NextResponse.json({ error: "Name already taken in this session" }, { status: 409 });
   }
 
   const playerCreateData = adapter.getPlayerCreateData();

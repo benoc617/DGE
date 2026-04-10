@@ -10,6 +10,7 @@ import {
   scheduleTestUserDeletion,
   uniqueGalaxy, uniqueName, sleep,
   TEST_PASSWORD, pollStatusUntil,
+  withAdminCookie, adminGetLogs,
 } from "../helpers";
 
 const GR_GALAXY = uniqueGalaxy("GinRummyE2E");
@@ -109,6 +110,22 @@ describe("Gin Rummy E2E", () => {
     expect(statusData.phase).toBe("discard");
     expect((statusData.myCards as string[]).length).toBe(11);
     expect((statusData.stockCount as number)).toBe(30);
+  });
+
+  // ---------------------------------------------------------------------------
+  // TurnLog written after action
+  // ---------------------------------------------------------------------------
+
+  it("admin logs show a TurnLog row after draw_stock action", async () => {
+    expect(sessionId).toBeTruthy();
+    await withAdminCookie(async (cookie) => {
+      const res = await adminGetLogs(cookie);
+      expect(res.status).toBe(200);
+      const { sessions } = res.data as { sessions: Array<{ id: string; turnLogCount: number }> };
+      const row = sessions.find((r) => r.id === sessionId);
+      expect(row).toBeDefined();
+      expect(row!.turnLogCount).toBeGreaterThan(0);
+    });
   });
 
   // ---------------------------------------------------------------------------
@@ -256,6 +273,28 @@ describe("Gin Rummy E2E", () => {
     const statusData = statusRes.data as Record<string, unknown>;
     expect(["resigned", "timeout", "hand_complete", "match_complete"]).toContain(statusData.gameStatus);
   }, 30_000);
+
+  // ---------------------------------------------------------------------------
+  // Logs purged after game over
+  // ---------------------------------------------------------------------------
+
+  it("admin logs show 0 TurnLog rows after game over (purge fired)", async () => {
+    expect(sessionId).toBeTruthy();
+    // The purge is fire-and-forget; give it up to 5s to complete.
+    let purged = false;
+    for (let i = 0; i < 10; i++) {
+      await sleep(500);
+      await withAdminCookie(async (cookie) => {
+        const res = await adminGetLogs(cookie);
+        if (res.status !== 200) return;
+        const { sessions } = res.data as { sessions: Array<{ id: string; turnLogCount: number; gameEventCount: number }> };
+        const row = sessions.find((r) => r.id === sessionId);
+        if (!row || (row.turnLogCount === 0 && row.gameEventCount === 0)) purged = true;
+      });
+      if (purged) break;
+    }
+    expect(purged).toBe(true);
+  }, 15_000);
 
   // ---------------------------------------------------------------------------
   // Help content

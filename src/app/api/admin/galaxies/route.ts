@@ -63,9 +63,9 @@ export async function POST(req: NextRequest) {
   const aiNames = Array.isArray(body.aiNames) ? body.aiNames.filter((x: unknown) => typeof x === "string") : [];
 
   if (galaxyName) {
-    const taken = await prisma.gameSession.findUnique({ where: { galaxyName } });
+    const taken = await prisma.gameSession.findFirst({ where: { galaxyName, status: "active" } });
     if (taken) {
-      return NextResponse.json({ error: "Galaxy name already taken" }, { status: 409 });
+      return NextResponse.json({ error: "Session name already taken" }, { status: 409 });
     }
   }
 

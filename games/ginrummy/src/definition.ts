@@ -21,7 +21,7 @@ import type {
 import type { Move } from "@dge/shared";
 import type { SearchGameFunctions } from "@dge/engine/search";
 import { mctsSearchAsync } from "@dge/engine/search";
-import { getDb } from "@dge/engine/db-context";
+import { getDb, runOutsideTransaction } from "@dge/engine/db-context";
 import type { GinRummyState } from "./types";
 import {
   cloneState, createDeck, shuffleDeck, createInitialState,
@@ -58,6 +58,169 @@ export async function saveGinRummyState(sessionId: string, state: GinRummyState)
     where: { id: sessionId },
     data: updates,
   });
+}
+
+// ---------------------------------------------------------------------------
+// Game logging (TurnLog + GameEvent + stdout dump/purge at game end)
+// ---------------------------------------------------------------------------
+
+const LOG_TAG = "[ginrummy-gamelog]";
+
+async function logTurnLog(
+  playerId: string,
+  action: string,
+  params: unknown,
+  message: string,
+  extra: { handNumber: number; phase: string },
+): Promise<void> {
+  try {
+    const details = { params: params ?? {}, actionMsg: message, ...extra };
+    await getDb().turnLog.create({
+      data: { playerId, action, details: details as object },
+    });
+  } catch (err) {
+    console.error(LOG_TAG, "turnLog write error:", err);
+  }
+}
+
+async function logGameEvent(
+  sessionId: string,
+  type: string,
+  message: string,
+  details?: Record<string, unknown>,
+): Promise<void> {
+  try {
+    await getDb().gameEvent.create({
+      data: { gameSessionId: sessionId, type, message, ...(details ? { details: details as object } : {}) },
+    });
+  } catch (err) {
+    console.error(LOG_TAG, "gameEvent write error:", err);
+  }
+}
+
+/** Fire-and-forget: dump TurnLog + GameEvent rows to stdout then delete them. */
+function schedulePurge(sessionId: string): void {
+  const db = runOutsideTransaction(() => getDb());
+  void (async () => {
+    try {
+      const players = await db.player.findMany({
+        where: { gameSessionId: sessionId },
+        select: { id: true },
+      });
+      const playerIds = players.map((p) => p.id);
+
+      const [turnLogs, gameEvents] = await Promise.all([
+        playerIds.length > 0
+          ? db.turnLog.findMany({ where: { playerId: { in: playerIds } }, orderBy: { createdAt: "asc" } })
+          : Promise.resolve([]),
+        db.gameEvent.findMany({ where: { gameSessionId: sessionId }, orderBy: { createdAt: "asc" } }),
+      ]);
+
+      console.info(LOG_TAG, JSON.stringify({
+        type: "session_log_dump_start", sessionId,
+        turnLogCount: turnLogs.length, gameEventCount: gameEvents.length,
+      }));
+      for (const row of turnLogs) {
+        console.info(LOG_TAG, JSON.stringify({ type: "turn_log", sessionId, ...row }));
+      }
+      for (const event of gameEvents) {
+        console.info(LOG_TAG, JSON.stringify({ logKind: "game_event", ...event }));
+      }
+
+      await db.$transaction(async (tx) => {
+        if (playerIds.length > 0) {
+          await tx.turnLog.deleteMany({ where: { playerId: { in: playerIds } } });
+        }
+        await tx.gameEvent.deleteMany({ where: { gameSessionId: sessionId } });
+      });
+
+      console.info(LOG_TAG, JSON.stringify({
+        type: "session_log_purge_complete", sessionId,
+        turnLogCount: turnLogs.length, gameEventCount: gameEvents.length,
+      }));
+    } catch (err) {
+      console.error(LOG_TAG, "auto-purge error", sessionId, err);
+    }
+  })();
+}
+
+/** Returns true when the whole game is fully over (session should be sealed). */
+function isGameOver(state: GinRummyState): boolean {
+  return (
+    state.status === "match_complete" ||
+    state.status === "hand_complete" ||
+    state.status === "resigned" ||
+    state.status === "timeout"
+  );
+}
+
+/**
+ * Write the appropriate GameEvent for a terminal or hand-complete state,
+ * then schedule log purge if the game is fully over.
+ */
+async function handleSessionEvent(sessionId: string, state: GinRummyState): Promise<void> {
+  // Fetch player names for readable messages
+  const players = await getDb().player.findMany({
+    where: { id: { in: [state.playerIds[0], state.playerIds[1]] } },
+    select: { id: true, name: true },
+  });
+  const nameById = new Map(players.map((p) => [p.id, p.name]));
+  const name0 = nameById.get(state.playerIds[0]) ?? "Player 1";
+  const name1 = nameById.get(state.playerIds[1]) ?? "Player 2";
+  const playerNames: [string, string] = [name0, name1];
+
+  const baseDetails: Record<string, unknown> = {
+    scores: state.scores,
+    handsWon: state.handsWon,
+    handNumber: state.handNumber,
+    matchTarget: state.matchTarget,
+  };
+
+  let type: string;
+  let message: string;
+  let details = baseDetails;
+
+  if (state.status === "resigned") {
+    const winnerIdx = state.winner ?? 0;
+    const loserIdx = (1 - winnerIdx) as 0 | 1;
+    type = "game_resigned";
+    message = `${playerNames[loserIdx]} resigned. ${playerNames[winnerIdx]} wins.`;
+  } else if (state.status === "match_complete" || state.status === "hand_complete") {
+    const r = state.handResult!;
+    const winnerName = playerNames[r.winner];
+    const qualifier = r.isGin ? " with GIN" : r.isUndercut ? " (undercut)" : "";
+    const scoreStr = `${state.scores[0]}–${state.scores[1]}`;
+    details = { ...baseDetails, handResult: r };
+    if (state.status === "match_complete") {
+      type = "match_complete";
+      message = `Hand ${state.handNumber}: ${winnerName} wins${qualifier} — match over. Scores: ${scoreStr}. Winner: ${playerNames[state.winner!]}.`;
+    } else {
+      type = "hand_complete";
+      message = `Hand ${state.handNumber}: ${winnerName} wins${qualifier} (+${r.points} pts). Scores: ${scoreStr}.`;
+    }
+  } else if (state.status === "timeout") {
+    type = "game_timeout";
+    message = "Game ended due to timeout.";
+  } else if (state.phase === "hand_over" && state.status === "playing") {
+    // Mid-match hand completed; game continues after next_hand
+    const r = state.handResult!;
+    const winnerName = playerNames[r.winner];
+    const qualifier = r.isGin ? " with GIN" : r.isUndercut ? " (undercut)" : "";
+    const scoreStr = `${state.scores[0]}–${state.scores[1]}`;
+    type = "hand_complete";
+    message = `Hand ${state.handNumber}: ${winnerName} wins${qualifier} (+${r.points} pts). Scores: ${scoreStr}.`;
+    details = { ...baseDetails, handResult: r };
+    await logGameEvent(sessionId, type, message, details);
+    return; // not game-over, skip purge
+  } else {
+    return; // no event for this state
+  }
+
+  await logGameEvent(sessionId, type, message, details);
+
+  if (isGameOver(state)) {
+    schedulePurge(sessionId);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -509,28 +672,43 @@ export const ginRummyGameDefinition: GameDefinition<GinRummyState> = {
     if (!player?.gameSessionId) {
       return { success: false, message: "Player has no session." };
     }
+    const sessionId = player.gameSessionId;
 
     let state: GinRummyState;
     try {
-      state = await loadGinRummyState(player.gameSessionId);
+      state = await loadGinRummyState(sessionId);
     } catch {
       return { success: false, message: "Game session not found." };
     }
 
-    const isOver =
-      state.status === "match_complete" ||
-      state.status === "hand_complete" ||
-      state.status === "resigned" ||
-      state.status === "timeout";
-    if (isOver && action !== "next_hand") {
+    const wasOver = isGameOver(state);
+    if (wasOver && action !== "next_hand") {
       return { success: false, message: "Game is already over." };
     }
 
+    const prevPhase = state.phase;
+    const prevStatus = state.status;
     const result = ginRummyApplyAction(state, playerId, action, params);
-    if (result.success) {
-      await saveGinRummyState(player.gameSessionId, result.state);
+    if (!result.success) {
+      return { success: false, message: result.message };
     }
-    return { success: result.success, message: result.message };
+
+    await saveGinRummyState(sessionId, result.state);
+    await logTurnLog(playerId, action, params, result.message, {
+      handNumber: state.handNumber,
+      phase: prevPhase,
+    });
+
+    // Write session event when phase/status changed to a noteworthy state
+    const nowOver = isGameOver(result.state);
+    const handJustEnded =
+      result.state.phase === "hand_over" && prevPhase !== "hand_over";
+    const matchJustEnded = result.state.status !== prevStatus && nowOver;
+    if (matchJustEnded || (handJustEnded && !nowOver)) {
+      await handleSessionEvent(sessionId, result.state);
+    }
+
+    return { success: true, message: result.message };
   },
 
   async runAiSequence(sessionId: string): Promise<void> {
@@ -554,16 +732,32 @@ export const ginRummyGameDefinition: GameDefinition<GinRummyState> = {
       const move = await getGinRummyAIMove(state, currentPlayerId);
       if (!move) break;
 
+      const prevPhase = state.phase;
+      const prevStatus = state.status;
       const result = ginRummyApplyAction(state, currentPlayerId, move.action, move.params);
       if (!result.success) break;
 
       await saveGinRummyState(sessionId, result.state);
+      await logTurnLog(currentPlayerId, move.action, move.params, result.message, {
+        handNumber: state.handNumber,
+        phase: prevPhase,
+      });
+
+      const nowOver = isGameOver(result.state);
+      const handJustEnded =
+        result.state.phase === "hand_over" && prevPhase !== "hand_over";
+      const matchJustEnded = result.state.status !== prevStatus && nowOver;
+      if (matchJustEnded || (handJustEnded && !nowOver)) {
+        await handleSessionEvent(sessionId, result.state);
+      }
 
       // If the active player changed, advance the engine's currentTurnPlayerId.
       if (result.state.playerIds[result.state.currentPlayer] !== currentPlayerId) {
         const { advanceTurn } = await import("@dge/engine/turn-order");
         await advanceTurn(sessionId);
       }
+
+      if (nowOver) break;
     }
   },
 };

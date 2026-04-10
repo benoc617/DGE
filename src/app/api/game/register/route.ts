@@ -68,15 +68,15 @@ async function handleRegisterPost(req: NextRequest): Promise<Response> {
   }
 
   if (galaxyName && typeof galaxyName === "string" && galaxyName.trim().length < 2) {
-    return NextResponse.json({ error: "Galaxy name must be at least 2 characters" }, { status: 400 });
+    return NextResponse.json({ error: "Session name must be at least 2 characters" }, { status: 400 });
   }
 
   if (galaxyName) {
-    const existingGalaxy = await prisma.gameSession.findUnique({
-      where: { galaxyName: (galaxyName as string).trim() },
+    const existingSession = await prisma.gameSession.findFirst({
+      where: { galaxyName: (galaxyName as string).trim(), status: "active" },
     });
-    if (existingGalaxy) {
-      return NextResponse.json({ error: "Galaxy name already taken" }, { status: 409 });
+    if (existingSession) {
+      return NextResponse.json({ error: "Session name already taken" }, { status: 409 });
     }
   }
 
