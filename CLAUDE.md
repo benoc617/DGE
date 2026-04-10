@@ -143,10 +143,16 @@ docker compose exec app npm run sim:csv
 
 ## Environment
 
-Requires a `.env` file (not committed) with:
+Requires a `.env` file (not committed; copy `.env.example` to get started) with:
 ```
-# Host Node + local MySQL (or Compose MySQL on host port 3306):
-DATABASE_URL="mysql://srx:srx@localhost:3306/srx"
+# MySQL credentials — must match docker-compose.yml; used by all Compose services.
+MYSQL_ROOT_PASSWORD="..."     # required; used by mysql service and its healthcheck
+MYSQL_PASSWORD="..."          # required; app/worker DATABASE_URL password
+MYSQL_USER="srx"              # default: srx
+MYSQL_DATABASE="srx"          # default: srx
+
+# Host-side DATABASE_URL (prisma studio, ad-hoc scripts via localhost:3306):
+DATABASE_URL="mysql://srx:<password>@localhost:3306/srx"
 GEMINI_API_KEY="..."          # or set in shell env; shell takes precedence
 GEMINI_MODEL="gemini-2.5-flash"  # optional, defaults to gemini-2.5-flash
 GEMINI_TIMEOUT_MS="60000"     # optional; max wait per AI Gemini call (ms), default 60000, clamped 1000–300000; then localFallback
@@ -167,7 +173,7 @@ INITIAL_ADMIN_PASSWORD="srxpass"
 # ADMIN_SESSION_SECRET="..."  # optional; defaults align with INITIAL_ADMIN_PASSWORD
 ```
 
-MySQL runs via Docker Compose (`docker compose up`). Standalone: `docker run -d --name srx-mysql -e MYSQL_ROOT_PASSWORD=root -e MYSQL_DATABASE=srx -e MYSQL_USER=srx -e MYSQL_PASSWORD=srx -p 3306:3306 mysql:8.4`
+MySQL runs via Docker Compose (`docker compose up`). Credentials come from `.env` — see `.env.example`. Standalone (substitute your passwords): `docker run -d --name srx-mysql -e MYSQL_ROOT_PASSWORD=<rootpw> -e MYSQL_DATABASE=srx -e MYSQL_USER=srx -e MYSQL_PASSWORD=<pw> -p 3306:3306 mysql:8.4`
 
 Prisma 7 uses `prisma.config.ts` for datasource config (NOT in schema.prisma). The `PrismaClient` requires `@prisma/adapter-mariadb`.
 
