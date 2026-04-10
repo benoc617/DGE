@@ -3,6 +3,7 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { apiFetch } from "@/lib/client-fetch";
 import { TurnTimer } from "@/components/TurnTimer";
+import { HelpModal } from "@/components/HelpModal";
 
 // ---------------------------------------------------------------------------
 // Types (mirror what buildStatus returns)
@@ -95,6 +96,8 @@ export function ChessGameScreen({
   const [submitting, setSubmitting] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const moveListRef = useRef<HTMLDivElement>(null);
+  const [showHelp, setShowHelp] = useState(false);
+  const [helpContent, setHelpContent] = useState<{ title: string; content: string } | null>(null);
 
   // -------------------------------------------------------------------------
   // Status polling
@@ -135,6 +138,18 @@ export function ChessGameScreen({
       moveListRef.current.scrollTop = moveListRef.current.scrollHeight;
     }
   }, [status?.moveHistory.length]);
+
+  const openHelp = useCallback(async () => {
+    if (helpContent) { setShowHelp(true); return; }
+    try {
+      const res = await fetch("/api/game/help?game=chess");
+      if (res.ok) {
+        const data = (await res.json()) as { title: string; content: string };
+        setHelpContent(data);
+        setShowHelp(true);
+      }
+    } catch { /* non-critical */ }
+  }, [helpContent]);
 
   // -------------------------------------------------------------------------
   // Compute legal moves for the selected piece
@@ -391,6 +406,14 @@ export function ChessGameScreen({
           <span className="text-gray-600">·</span>
           <span className="text-green-600">{playerName}</span>
           <span className="text-gray-700">({status.myColor})</span>
+          <button
+            type="button"
+            onClick={() => void openHelp()}
+            className="border border-green-800 text-green-600 hover:border-green-500 hover:text-green-400 px-1.5 py-0.5 text-[10px] leading-none"
+            title="Show help (rules & reference)"
+          >
+            ?
+          </button>
           <button onClick={onLogout} className="text-red-900 hover:text-red-500 text-xs">
             LEAVE
           </button>
@@ -574,6 +597,15 @@ export function ChessGameScreen({
           </div>
         </div>
       </div>
+
+      {/* Help modal */}
+      {showHelp && helpContent && (
+        <HelpModal
+          title={helpContent.title}
+          content={helpContent.content}
+          onClose={() => setShowHelp(false)}
+        />
+      )}
     </div>
   );
 }

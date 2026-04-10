@@ -3,6 +3,7 @@
 import { useState, useCallback, useEffect } from "react";
 import { apiFetch } from "@/lib/client-fetch";
 import { TurnTimer } from "@/components/TurnTimer";
+import { HelpModal } from "@/components/HelpModal";
 
 // ---------------------------------------------------------------------------
 // Types (mirror what buildStatus returns)
@@ -87,6 +88,27 @@ function parseCard(key: string): { rank: string; suit: string } {
   return { rank, suit };
 }
 
+// ---------------------------------------------------------------------------
+// Sort helpers (exported for unit tests)
+// ---------------------------------------------------------------------------
+
+const RANK_ORDER = "A23456789TJQK";
+const SUIT_ORDER = "CDHS";
+
+/** Sort index for a card's rank: A=0, 2=1, …, K=12. */
+export function ginRankIdx(cardKey: string): number {
+  return RANK_ORDER.indexOf(cardKey[0]);
+}
+
+/** Sort index for a card's suit: C=0, D=1, H=2, S=3. */
+export function ginSuitIdx(cardKey: string): number {
+  return SUIT_ORDER.indexOf(cardKey[cardKey.length - 1]);
+}
+
+// ---------------------------------------------------------------------------
+// CardView
+// ---------------------------------------------------------------------------
+
 function CardView({
   cardKey,
   selected = false,
@@ -94,7 +116,13 @@ function CardView({
   dim = false,
   highlight = false,
   small = false,
+  draggable: isDraggable = false,
+  dragOver = false,
   onClick,
+  onDragStart,
+  onDragOver,
+  onDrop,
+  onDragEnd,
 }: {
   cardKey: string;
   selected?: boolean;
@@ -102,7 +130,13 @@ function CardView({
   dim?: boolean;
   highlight?: boolean;
   small?: boolean;
+  draggable?: boolean;
+  dragOver?: boolean;
   onClick?: () => void;
+  onDragStart?: (e: React.DragEvent) => void;
+  onDragOver?: (e: React.DragEvent) => void;
+  onDrop?: (e: React.DragEvent) => void;
+  onDragEnd?: () => void;
 }) {
   const { rank, suit } = parseCard(cardKey);
   const isRed = RED_SUITS.has(suit);
@@ -126,11 +160,18 @@ function CardView({
         ? "opacity-40"
         : "";
 
-  const cursorCls = onClick ? "cursor-pointer hover:border-yellow-400 transition-all" : "";
+  const cursorCls = onClick
+    ? "cursor-pointer hover:border-yellow-400 transition-all"
+    : isDraggable
+      ? "cursor-grab active:cursor-grabbing"
+      : "";
+
+  // Left-edge highlight when a dragged card is hovering over this slot
+  const dragOverCls = dragOver ? "border-l-2 border-l-yellow-400" : "";
 
   if (faceDown) {
     return (
-      <div className={`${base} ${colorCls} ${stateCls} ${cursorCls}`} onClick={onClick} title="Face-down card">
+      <div className={`${base} ${colorCls} ${stateCls} ${cursorCls} ${dragOverCls}`} onClick={onClick} title="Face-down card">
         <span className={small ? "text-xs" : "text-sm"}>🂠</span>
       </div>
     );
@@ -141,8 +182,13 @@ function CardView({
 
   return (
     <div
-      className={`${base} ${colorCls} ${stateCls} ${cursorCls}`}
+      className={`${base} ${colorCls} ${stateCls} ${cursorCls} ${dragOverCls}`}
+      draggable={isDraggable}
       onClick={onClick}
+      onDragStart={onDragStart}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      onDragEnd={onDragEnd}
       title={`${rank} of ${suit === "H" ? "Hearts" : suit === "D" ? "Diamonds" : suit === "C" ? "Clubs" : "Spades"}`}
     >
       <span className={rankSizeTop}>{rank}</span>
@@ -288,6 +334,16 @@ export function GinRummyGameScreen({
   const [busy, setBusy] = useState(false);
   const [showHandResult, setShowHandResult] = useState(false);
 
+  // Hand ordering — client-only, never sent to server
+  const [localOrder, setLocalOrder] = useState<string[] | null>(null);
+  const [sortMode, setSortMode] = useState<"rank" | "suit" | null>(null);
+  // Drag-to-reorder
+  const [dragging, setDragging] = useState<string | null>(null);
+  const [dragOverKey, setDragOverKey] = useState<string | null>(null);
+  // Help modal
+  const [showHelp, setShowHelp] = useState(false);
+  const [helpContent, setHelpContent] = useState<{ title: string; content: string } | null>(null);
+
   const playerId = sessionPlayerId ?? "";
   const gameId = gameSessionId ?? "";
 
@@ -327,6 +383,18 @@ export function GinRummyGameScreen({
       setPendingLayoffs([]);
     }
   }, [status?.phase]);
+
+  // Keep local hand order in sync with server: preserve existing card positions,
+  // append newly-drawn cards at the end so they're visually obvious.
+  useEffect(() => {
+    if (!status?.myCards) return;
+    setLocalOrder((prev) => {
+      if (!prev) return status.myCards;
+      const kept = prev.filter((c) => status.myCards.includes(c));
+      const added = status.myCards.filter((c) => !prev.includes(c));
+      return [...kept, ...added];
+    });
+  }, [status?.myCards]);
 
   // ── Action helpers ───────────────────────────────────────────────────────
 
@@ -394,6 +462,53 @@ export function GinRummyGameScreen({
 
   const galaxyName = status?.galaxyName ?? initialGalaxyName ?? "Gin Rummy";
 
+  // ── Sort / drag helpers ──────────────────────────────────────────────────
+
+  // Cards shown in the flat hand view, in local (possibly sorted/reordered) order
+  const displayCards = localOrder ?? status?.myCards ?? [];
+
+  function sortHand(mode: "rank" | "suit") {
+    const cards = localOrder ?? status?.myCards ?? [];
+    const sorted = [...cards].sort((a, b) =>
+      mode === "rank"
+        ? ginRankIdx(a) - ginRankIdx(b) || ginSuitIdx(a) - ginSuitIdx(b)
+        : ginSuitIdx(a) - ginSuitIdx(b) || ginRankIdx(a) - ginRankIdx(b),
+    );
+    setLocalOrder(sorted);
+    setSortMode(mode);
+  }
+
+  function handleDrop(targetKey: string) {
+    if (!dragging || dragging === targetKey) return;
+    setLocalOrder((prev) => {
+      const order = prev ?? status?.myCards ?? [];
+      const from = order.indexOf(dragging);
+      const to = order.indexOf(targetKey);
+      if (from < 0 || to < 0) return order;
+      const next = [...order];
+      next.splice(from, 1);
+      next.splice(to, 0, dragging);
+      return next;
+    });
+    setSortMode(null); // now in custom order
+    setDragging(null);
+    setDragOverKey(null);
+  }
+
+  // ── Help ─────────────────────────────────────────────────────────────────
+
+  const openHelp = useCallback(async () => {
+    if (helpContent) { setShowHelp(true); return; }
+    try {
+      const res = await fetch("/api/game/help?game=ginrummy");
+      if (res.ok) {
+        const data = (await res.json()) as { title: string; content: string };
+        setHelpContent(data);
+        setShowHelp(true);
+      }
+    } catch { /* non-critical */ }
+  }, [helpContent]);
+
   // ── Waiting for opponent ─────────────────────────────────────────────────
 
   if (status?.waitingForGameStart) {
@@ -445,6 +560,14 @@ export function GinRummyGameScreen({
           {status?.turnDeadline && !gameOver && (
             <TurnTimer deadline={status.turnDeadline} isYourTurn={status.isYourTurn} />
           )}
+          <button
+            type="button"
+            onClick={() => void openHelp()}
+            className="border border-green-800 text-green-600 hover:border-green-500 hover:text-green-400 px-1.5 py-0.5 text-[10px] leading-none"
+            title="Show help (rules & reference)"
+          >
+            ?
+          </button>
           <button
             onClick={onLogout}
             className="text-green-700 hover:text-green-400 border border-green-800 px-2 py-0.5 rounded text-xs"
@@ -749,10 +872,34 @@ export function GinRummyGameScreen({
 
           {/* My hand */}
           <div className="w-full">
-            <div className="text-xs text-green-600 mb-1 text-center">
-              YOUR HAND · Deadwood: {status?.myDeadwoodValue ?? "—"}
-              {status?.phase === "discard" && status.isYourTurn && " · Click to select discard"}
+            {/* Sort controls + label */}
+            <div className="flex items-center justify-center gap-3 mb-1">
+              <div className="text-xs text-green-600">
+                YOUR HAND · Deadwood: {status?.myDeadwoodValue ?? "—"}
+                {status?.phase === "discard" && status.isYourTurn && " · Click to select discard"}
+              </div>
+              {/* Only show sort/drag controls in flat hand view */}
+              {(!status?.myMelds || status.myMelds.length === 0) && (
+                <div className="flex gap-1">
+                  {(["rank", "suit"] as const).map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      onClick={() => sortHand(m)}
+                      className={`text-[9px] px-1.5 py-0.5 border leading-none ${
+                        sortMode === m
+                          ? "border-yellow-500 text-yellow-400"
+                          : "border-green-800 text-green-700 hover:border-green-600 hover:text-green-500"
+                      }`}
+                      title={`Sort by ${m}`}
+                    >
+                      {m.toUpperCase()}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
+
             {/* Melds grouping */}
             {status?.myMelds && status.myMelds.length > 0 && (
               <div className="flex justify-center gap-3 flex-wrap mb-2">
@@ -785,7 +932,7 @@ export function GinRummyGameScreen({
                     ))}
                   </div>
                 ))}
-                {/* Deadwood cards */}
+                {/* Deadwood cards — draggable to reorder within deadwood */}
                 {status.myDeadwood.length > 0 && (
                   <div className="flex gap-0.5 p-0.5">
                     {status.myDeadwood.map((ck) => (
@@ -823,10 +970,13 @@ export function GinRummyGameScreen({
               </div>
             )}
 
-            {/* All cards (flat view when no melds yet) */}
+            {/* Flat view — shown when no melds computed yet; drag to reorder */}
             {(!status?.myMelds || status.myMelds.length === 0) && (
-              <div className="flex justify-center gap-1 flex-wrap">
-                {(status?.myCards ?? []).map((ck) => (
+              <div
+                className="flex justify-center gap-1 flex-wrap"
+                onDragOver={(e) => e.preventDefault()}
+              >
+                {displayCards.map((ck) => (
                   <CardView
                     key={ck}
                     cardKey={ck}
@@ -838,6 +988,18 @@ export function GinRummyGameScreen({
                       !!selectedCard &&
                       selectedCard !== ck
                     }
+                    draggable={!status?.isLayoffPhase}
+                    dragOver={dragOverKey === ck && dragging !== ck}
+                    onDragStart={(e) => {
+                      e.dataTransfer.effectAllowed = "move";
+                      setDragging(ck);
+                    }}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      setDragOverKey(ck);
+                    }}
+                    onDrop={() => handleDrop(ck)}
+                    onDragEnd={() => { setDragging(null); setDragOverKey(null); }}
                     onClick={
                       status?.isYourTurn && status?.phase === "discard"
                         ? () => setSelectedCard((prev) => (prev === ck ? null : ck))
@@ -857,7 +1019,7 @@ export function GinRummyGameScreen({
           </div>
         </div>
 
-        {/* Right panel: hand result + log */}
+        {/* Right panel: hand result + players */}
         <div className="w-48 border-l border-green-900 p-3 flex flex-col gap-3 text-xs overflow-y-auto">
           <div>
             <div className="text-green-600 mb-1">HAND RESULT</div>
@@ -916,6 +1078,15 @@ export function GinRummyGameScreen({
           )}
         </div>
       </div>
+
+      {/* Help modal */}
+      {showHelp && helpContent && (
+        <HelpModal
+          title={helpContent.title}
+          content={helpContent.content}
+          onClose={() => setShowHelp(false)}
+        />
+      )}
     </div>
   );
 }

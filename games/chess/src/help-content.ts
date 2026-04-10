@@ -32,6 +32,7 @@ Standard FIDE chess rules apply:
 ## Controls
 
 - **Resign**: Click the Resign button to concede the game.
+- **?**: Opens this help reference.
 - Captured pieces are shown in the left panel.
 - Move history is in the right panel.
 - Check and checkmate are automatically detected.

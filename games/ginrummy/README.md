@@ -28,6 +28,9 @@ In the lobby, choose **Gin Rummy** and configure:
 - Human vs human with invite code support
 - 12-hour per-turn timer with automatic forfeit on timeout
 - Live deadwood counter in the left panel
+- **Sort hand by rank or suit** — RANK / SUIT buttons above your hand, active sort highlighted
+- **Drag to reorder** — drag cards within your hand to any position; newly-drawn cards append at the end
+- **In-game help** — `?` button in the header opens the rules reference
 
 ## Technical
 See [docs/GAME-SPEC.md](docs/GAME-SPEC.md) for the complete technical specification.

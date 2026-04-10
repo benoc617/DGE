@@ -46,6 +46,13 @@ Each player has a turn timer. If it runs out, your turn is forfeited (treated as
 - Use the **Draw Stock** / **Take Discard** buttons to draw.
 - Use **Knock** or **Gin** buttons when available (green = eligible).
 - During your opponent's knock, click cards in your hand to lay them off on their melds, then click **Done**.
+
+## Hand Sorting & Reordering
+- **RANK** button — sort your hand by rank (A–K), suit as tiebreaker.
+- **SUIT** button — sort by suit (C, D, H, S), rank as tiebreaker.
+- **Drag a card** to reorder it within your hand. The yellow left border shows where it will drop.
+- Newly drawn cards always appear at the end of your local order.
+- Sorting and reordering are display-only — they do not affect game logic.
 `.trim();
 
 export const HELP_REGISTRY: Record<string, { title: string; content: string }> = {

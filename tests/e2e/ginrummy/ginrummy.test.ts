@@ -430,3 +430,47 @@ describe("Gin Rummy human vs human", () => {
     expect((p2DrawRes.data as Record<string, unknown>).success).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Help API — covers gin rummy and chess help endpoints
+// ---------------------------------------------------------------------------
+
+describe("Help API", () => {
+  it("GET /api/game/help?game=ginrummy returns title and content", async () => {
+    const res = await api("/api/game/help?game=ginrummy");
+    expect(res.status).toBe(200);
+    const data = res.data as Record<string, unknown>;
+    expect(typeof data.title).toBe("string");
+    expect((data.title as string).length).toBeGreaterThan(0);
+    expect(typeof data.content).toBe("string");
+    expect((data.content as string).length).toBeGreaterThan(0);
+    // Should mention key Gin Rummy concepts
+    expect(data.content as string).toMatch(/knock/i);
+    expect(data.content as string).toMatch(/meld/i);
+    // New features should be documented in help
+    expect(data.content as string).toMatch(/sort|rank|suit/i);
+  });
+
+  it("GET /api/game/help?game=chess returns title and content", async () => {
+    const res = await api("/api/game/help?game=chess");
+    expect(res.status).toBe(200);
+    const data = res.data as Record<string, unknown>;
+    expect(typeof data.title).toBe("string");
+    expect(typeof data.content).toBe("string");
+    expect((data.content as string).length).toBeGreaterThan(0);
+    expect(data.content as string).toMatch(/castling|en passant/i);
+  });
+
+  it("GET /api/game/help?game=srx returns title and content", async () => {
+    const res = await api("/api/game/help?game=srx");
+    expect(res.status).toBe(200);
+    const data = res.data as Record<string, unknown>;
+    expect(typeof data.title).toBe("string");
+    expect(typeof data.content).toBe("string");
+  });
+
+  it("GET /api/game/help?game=unknown returns 404", async () => {
+    const res = await api("/api/game/help?game=unknown_xyz");
+    expect(res.status).toBe(404);
+  });
+});

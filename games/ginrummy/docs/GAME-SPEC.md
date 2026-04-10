@@ -233,6 +233,27 @@ Written for every successful action via `processFullAction` and `runAiSequence`.
 
 ---
 
+## UI Features
+
+### Hand Management
+
+The `GinRummyGameScreen` provides client-side hand management tools:
+
+- **Sort by rank** (`RANK` button): orders cards A, 2–9, T, J, Q, K with suit as tiebreaker (C, D, H, S).
+- **Sort by suit** (`SUIT` button): groups cards by suit (C, D, H, S) with rank as tiebreaker.
+- **Drag to reorder**: each card in the flat hand view is `draggable`; drop onto another card to insert before it. A yellow left-edge highlight shows the drop target. Reordering sets the sort mode to "custom".
+- Active sort mode is highlighted in yellow on the sort buttons.
+- Ordering is client-only and never sent to the server; the server's `myCards` order is the source of truth for game logic.
+- When a new card is drawn, it appends at the end of the local order. When a card is discarded, it is removed while preserving the relative order of remaining cards.
+
+### Help
+
+A `?` button in the header opens a `HelpModal` fetched from `GET /api/game/help?game=ginrummy`. Content is cached in component state after the first fetch.
+
+Sort helpers (`ginRankIdx`, `ginSuitIdx`) are exported from `GinRummyGameScreen.tsx` for unit testing.
+
+---
+
 ## Files
 
 | File | Role |
@@ -245,7 +266,7 @@ Written for every successful action via `processFullAction` and `runAiSequence`.
 | `games/ginrummy/src/index.ts` | Package barrel export |
 | `src/lib/ginrummy-registration.ts` | Engine registration, `getActivePlayers` hook |
 | `src/lib/ginrummy-http-adapter.ts` | `GameHttpAdapter`: status, session setup, player join |
-| `src/components/GinRummyGameScreen.tsx` | React UI: card table, hand rendering, actions |
+| `src/components/GinRummyGameScreen.tsx` | React UI: card table, hand sort/drag/reorder, actions, help |
 
 ---
 
@@ -255,6 +276,7 @@ Written for every successful action via `processFullAction` and `runAiSequence`.
 - `tests/unit/ginrummy-melds.test.ts` — meld detection, deadwood, layoff options
 - `tests/unit/ginrummy-rules.test.ts` — game lifecycle: deal, draw, knock, gin, undercut, resign
 - `tests/unit/ginrummy-mcts.test.ts` — MCTS, eval, search functions, AI move generation
+- `tests/unit/ginrummy-ui.test.ts` — `ginRankIdx`, `ginSuitIdx`, `sortHand` ordering
 
 ### E2E Tests
-- `tests/e2e/ginrummy/ginrummy.test.ts` — registration, status, draw/discard, AI polling, TurnLog presence after actions, log purge after game over, resign, human vs human
+- `tests/e2e/ginrummy/ginrummy.test.ts` — registration, status, draw/discard, AI polling, TurnLog presence after actions, log purge after game over, resign, human vs human; help API (`GET /api/game/help?game=ginrummy` and `?game=chess`)
