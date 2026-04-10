@@ -61,7 +61,11 @@ export const ginRummyHttpAdapter: GameHttpAdapter = {
       where: { id: sessionId },
       select: { log: true },
     });
-    if (session?.log) return; // already initialized
+    // Treat [] default log as uninitialized; only skip if already a real GinRummyState object
+    const rawLog = session?.log;
+    const alreadyInitialized =
+      rawLog && typeof rawLog === "object" && !Array.isArray(rawLog);
+    if (alreadyInitialized) return;
 
     // Two humans: initialize state now
     const players = await prisma.player.findMany({
